@@ -24,6 +24,37 @@
         .toast-notification { position: fixed; bottom: 20px; right: 20px; z-index: 9999; }
         .loading { display: inline-block; width: 20px; height: 20px; border: 3px solid #f3f3f3; border-top: 3px solid #667eea; border-radius: 50%; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .kanban-card {
+                background: white;
+                border-radius: 10px;
+                padding: 12px;
+                margin-bottom: 10px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+                transition: all 0.2s;
+                cursor: pointer;
+            }
+            .kanban-card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+            }
+            .kanban-column {
+                background: #f1f3f5;
+                border-radius: 12px;
+                padding: 12px;
+                min-height: 500px;
+                max-height: 600px;
+                overflow-y: auto;
+            }
+            .kanban-cards {
+                min-height: 300px;
+            }
+            .dropdown-menu {
+                min-width: 180px;
+            }
+            .dropdown-item.disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
     </style>
 </head>
 <body>
@@ -59,9 +90,11 @@
                 <li class="nav-item"><a class="nav-link active" href="#" data-vista="dashboard"><i class="bi bi-speedometer2"></i> Dashboard</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-vista="oportunidades"><i class="bi bi-briefcase"></i> Oportunidades</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-vista="clientes"><i class="bi bi-people"></i> Clientes</a></li>
+                <li class="nav-item"><a class="nav-link" href="#" data-vista="actividades"><i class="bi bi-calendar-check"></i> Actividades</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-vista="nuevaOportunidad"><i class="bi bi-plus-circle"></i> Nueva Oportunidad</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-vista="nuevoCliente"><i class="bi bi-person-plus"></i> Nuevo Cliente</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-vista="empleados"><i class="bi bi-people-fill"></i> Vendedores</a></li>
+                <li class="nav-item"><a class="nav-link" href="#" data-vista="kanban"><i class="bi bi-kanban"></i> Kanban</a></li>
             </ul>
         </div>
         
@@ -234,6 +267,9 @@
     }
 
     function renderNuevaOportunidad() {
+        const etapaInicial = localStorage.getItem('etapaInicial') || '';
+        localStorage.removeItem('etapaInicial');
+        
         return `
             <div class="card-modern card p-4">
                 <h4><i class="bi bi-plus-circle"></i> Nueva Oportunidad</h4>
@@ -258,16 +294,27 @@
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label>Monto Potencial (Q)</label>
+                        <label>Monto Potencial ($)</label>
                         <input type="number" class="form-control" name="monto_potencial" step="0.01">
                     </div>
+                    <div class="mb-3">
+                        <label>Cierre Planificado</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" name="cierre_planificado_valor" value="30">
+                            <select class="form-select" name="id_unidad_cierre">
+                                <option value="1">Días</option>
+                                <option value="2">Semanas</option>
+                                <option value="3">Meses</option>
+                            </select>
+                        </div>
+                    </div>
+                    <input type="hidden" name="id_tipo_oportunidad" value="1">
                     <button type="submit" class="btn btn-primary">Guardar</button>
-                    <button type="button" class="btn btn-secondary" onclick="cambiarVista('oportunidades')">Cancelar</button>
+                    <button type="button" class="btn btn-secondary" onclick="cambiarVista('kanban')">Cancelar</button>
                 </form>
             </div>
         `;
     }
-
     function renderNuevoCliente() {
         return `
             <div class="card-modern card p-4">
@@ -663,7 +710,16 @@
                 contenedor.innerHTML = renderEmpleados();
                 cargarEmpleados();
                 break;
-                        default: contenedor.innerHTML = renderDashboard();
+            case 'kanban':
+                contenedor.innerHTML = renderKanban();
+                await cargarKanban();
+                break;
+            case 'actividades':
+                contenedor.innerHTML = renderActividades();
+                await cargarCatalogosActividad();
+                await cargarActividades();
+                break;
+            default: contenedor.innerHTML = renderDashboard();
         }
     }
 
@@ -691,10 +747,492 @@
         }
     }
 
+    
+    // ========== VARIABLES GLOBALES PARA KANBAN ==========
+    let etapas = [];
+    let oportunidadesKanban = [];
+
+    // ========== VISTA KANBAN ==========
+
+    function renderKanban() {
+        return `
+            <div class="card-modern card p-3">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h4><i class="bi bi-kanban"></i> Pipeline de Ventas</h4>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="cargarKanban()">
+                        <i class="bi bi-arrow-repeat"></i> Actualizar
+                    </button>
+                </div>
+                <div id="kanbanContainer" class="row" style="overflow-x: auto; flex-wrap: nowrap;">
+                    <div class="text-center p-5">
+                        <div class="loading"></div>
+                        <p>Cargando pipeline...</p>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    async function cargarKanban() {
+        try {
+            // Cargar etapas y oportunidades
+            const [etapasRes, oportunidadesRes] = await Promise.all([
+                fetch(`${API_URL}/etapas`),
+                fetch(`${API_URL}/oportunidades/kanban`)
+            ]);
+            
+            etapas = await etapasRes.json();
+            oportunidadesKanban = await oportunidadesRes.json();
+            
+            console.log('Etapas:', etapas);
+            console.log('Oportunidades:', oportunidadesKanban);
+            
+            const container = document.getElementById('kanbanContainer');
+            if (!container) return;
+            
+            if (etapas.length === 0) {
+                container.innerHTML = '<div class="alert alert-warning">No hay etapas configuradas</div>';
+                return;
+            }
+            
+            // Construir columnas Kanban
+            let html = '';
+            
+            for (const etapa of etapas) {
+                // Filtrar oportunidades de esta etapa
+                const oportunidadesEtapa = oportunidadesKanban.filter(opp => 
+                    opp.id_etapa_actual === etapa.id_tipo_etapa || 
+                    (opp.id_etapa_actual === null && etapa.orden === 1)
+                );
+                
+                const totalMonto = oportunidadesEtapa.reduce((sum, opp) => sum + (parseFloat(opp.monto_potencial) || 0), 0);
+                
+                html += `
+                    <div class="col-md-3 mb-3" style="min-width: 320px;">
+                        <div class="kanban-column" style="background: #f8f9fa; border-radius: 12px; padding: 12px; height: 100%;">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="mb-0">
+                                    ${etapa.nombre_etapa}
+                                    <span class="badge bg-secondary ms-1">${etapa.porcentaje}%</span>
+                                </h6>
+                                <span class="badge bg-primary rounded-pill">${oportunidadesEtapa.length}</span>
+                            </div>
+                            <div class="small text-muted mb-2">
+                                $${totalMonto.toLocaleString()}
+                            </div>
+                            <div class="kanban-cards" data-etapa-id="${etapa.id_tipo_etapa}">
+                                ${oportunidadesEtapa.map(opp => `
+                                    <div class="kanban-card" data-id="${opp.id_oportunidad}">
+                                        <div class="d-flex justify-content-between align-items-start">
+                                            <strong>${opp.cliente || 'Sin cliente'}</strong>
+                                            <div class="dropdown">
+                                                <button class="btn btn-sm btn-light btn-action" data-bs-toggle="dropdown">
+                                                    <i class="bi bi-three-dots-vertical"></i>
+                                                </button>
+                                                <ul class="dropdown-menu">
+                                                    ${etapas.map(e => `
+                                                        <li>
+                                                            <a class="dropdown-item ${e.id_tipo_etapa === etapa.id_tipo_etapa ? 'disabled' : ''}" 
+                                                            href="#" onclick="cambiarEtapa(${opp.id_oportunidad}, ${e.id_tipo_etapa}, '${e.nombre_etapa}')">
+                                                                ${e.nombre_etapa} (${e.porcentaje}%)
+                                                            </a>
+                                                        </li>
+                                                    `).join('')}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                        <div class="small text-muted">${opp.vendedor || 'Sin vendedor'}</div>
+                                        <div class="fw-bold mt-1">$${(parseFloat(opp.monto_potencial) || 0).toLocaleString()}</div>
+                                        <div class="progress-custom mt-2" style="background: #e9ecef; border-radius: 4px; height: 8px;">
+                                            <div style="width: ${opp.porcentaje_avance || 0}%; background: linear-gradient(90deg, #667eea, #764ba2); border-radius: 4px; height: 8px; transition: width 0.3s;"></div>
+                                        </div>
+                                        <div class="small text-muted mt-1">${opp.numero_oportunidad || 'OP-' + opp.id_oportunidad}</div>
+                                    </div>
+                                `).join('')}
+                                ${oportunidadesEtapa.length === 0 ? '<div class="text-center text-muted small p-3">Sin oportunidades</div>' : ''}
+                            </div>
+                            <button class="btn btn-sm btn-outline-primary w-100 mt-2" onclick="crearOportunidadDesdeKanban(${etapa.id_tipo_etapa})">
+                                <i class="bi bi-plus"></i> Nueva oportunidad
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = html;
+            
+        } catch (error) {
+            console.error('Error cargando Kanban:', error);
+            const container = document.getElementById('kanbanContainer');
+            if (container) {
+                container.innerHTML = `<div class="alert alert-danger">Error al cargar: ${error.message}</div>`;
+            }
+        }
+    }
+
+    async function cambiarEtapa(idOportunidad, nuevaEtapaId, etapaNombre) {
+        if (!confirm(`¿Mover esta oportunidad a "${etapaNombre}"?`)) return;
+        
+        // Mostrar mensaje de carga
+        mostrarMensaje(`Moviendo oportunidad a "${etapaNombre}"...`, 'info');
+        
+        try {
+            const response = await fetch(`${API_URL}/oportunidades/${idOportunidad}/cambiar-etapa`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    id_tipo_etapa: nuevaEtapaId,
+                    comentario: `Movido a etapa: ${etapaNombre}`
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (response.ok) {
+                mostrarMensaje(`${result.message}`);
+                
+                // Recargar
+                await cargarDatos();           // Recarga oportunidades generales
+                await cargarKanban();          // Recarga el Kanban fresco
+                
+            } else {
+                mostrarMensaje(`Error: ${result.error}`, 'danger');
+            }
+            
+        } catch (error) {
+            console.error('Error al cambiar etapa:', error);
+            mostrarMensaje('Error de conexión', 'danger');
+        }
+    }
+    function crearOportunidadDesdeKanban(etapaId) {
+        // Redirigir al formulario con etapa pre-seleccionada
+        localStorage.setItem('etapaInicial', etapaId);
+        cambiarVista('nuevaOportunidad');
+    }
+    // ========== VARIABLES GLOBALES PARA ACTIVIDADES ==========
+let actividades = [];
+let tiposActividad = [];
+let estadosActividad = [];
+let prioridades = [];
+
+// ========== VISTA: ACTIVIDADES ==========
+
+    function renderActividades() {
+    return `
+        <div class="card-modern card p-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h4><i class="bi bi-calendar-check"></i> Gestión de Actividades</h4>
+                <button class="btn btn-primary btn-custom" onclick="mostrarFormActividad()">
+                    <i class="bi bi-plus-circle"></i> Nueva Actividad
+                </button>
+            </div>
+            
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead class="table-light">
+                        <tr>
+                            <th>#</th>
+                            <th>Asunto</th>
+                            <th>Cliente</th>
+                            <th>Responsable</th>
+                            <th>Tipo</th>
+                            <th>Fecha</th>
+                            <th>Hora</th>
+                            <th>Prioridad</th>
+                            <th>Estado</th>
+                            <th>Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tablaActividades">
+                        <tr><td colspan="10" class="text-center">Cargando...<td><tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+    async function cargarActividades() {
+    try {
+        const response = await fetch(`${API_URL}/actividades`);
+        actividades = await response.json();
+        
+        const tbody = document.getElementById('tablaActividades');
+        if (!tbody) return;
+        
+        if (actividades.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center">No hay actividades registradas</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = actividades.map(act => `
+            <tr>
+                <td><small>${act.numero_actividad || act.id_actividad}</small></td>
+                <td><strong>${act.asunto}</strong></td>
+                <td>${act.cliente || '-'}</td>
+                <td>${act.responsable || '-'}</td>
+                <td><span class="badge bg-info">${act.tipo_actividad}</span></td>
+                <td>${new Date(act.fecha).toLocaleDateString()}</td>
+                <td><small>${act.hora_inicio?.substring(0,5) || '-'}</small></td>
+                <td>
+                    ${act.prioridad === 'Alta' ? '<span class="badge bg-danger">Alta</span>' : 
+                      act.prioridad === 'Normal' ? '<span class="badge bg-warning">Normal</span>' : 
+                      '<span class="badge bg-secondary">Baja</span>'}
+                </td>
+                <td>
+                    <select class="form-select form-select-sm" style="width: 120px;" 
+                            onchange="cambiarEstadoActividad(${act.id_actividad}, this.value)">
+                        <option value="1" ${act.estado === 'En Proceso' ? 'selected' : ''}>En Proceso</option>
+                        <option value="2" ${act.estado === 'En Espera' ? 'selected' : ''}>En Espera</option>
+                        <option value="3" ${act.estado === 'Concluido' ? 'selected' : ''}>Concluido</option>
+                        <option value="4" ${act.estado === 'No Iniciado' ? 'selected' : ''}>No Iniciado</option>
+                    </select>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="eliminarActividad(${act.id_actividad})">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+        
+    } catch (error) {
+        console.error('Error cargando actividades:', error);
+        const tbody = document.getElementById('tablaActividades');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="10" class="text-center text-danger">Error cargando datos</td></tr>';
+    }
+}
+
+    async function cargarCatalogosActividad() {
+    try {
+        const [tiposRes, estadosRes, prioridadesRes] = await Promise.all([
+            fetch(`${API_URL}/tipos-actividad`),
+            fetch(`${API_URL}/estados-actividad`),
+            fetch(`${API_URL}/prioridades`)
+        ]);
+        
+        tiposActividad = await tiposRes.json();
+        estadosActividad = await estadosRes.json();
+        prioridades = await prioridadesRes.json();
+        
+    } catch (error) {
+        console.error('Error cargando catálogos:', error);
+    }
+}
+
+    function mostrarFormActividad(actividad = null) {
+    const esEdicion = actividad !== null;
+    const titulo = esEdicion ? 'Editar Actividad' : 'Nueva Actividad';
+    
+    Promise.all([
+        fetch(`${API_URL}/clientes`).then(r => r.json()),
+        fetch(`${API_URL}/empleados/activos`).then(r => r.json())
+    ]).then(([clientesLista, empleadosLista]) => {
+        
+        const today = new Date().toISOString().split('T')[0];
+        
+        const modalHTML = `
+            <div class="modal fade" id="modalActividad" tabindex="-1" data-bs-backdrop="static">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header bg-primary text-white">
+                            <h5 class="modal-title">${titulo}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <form id="formActividad">
+                                <input type="hidden" name="id_actividad" value="${actividad?.id_actividad || ''}">
+                                
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label>Cliente *</label>
+                                        <select class="form-select" name="id_cliente" required>
+                                            <option value="">Seleccione...</option>
+                                            ${clientesLista.map(c => `
+                                                <option value="${c.id_cliente}" ${actividad?.id_cliente === c.id_cliente ? 'selected' : ''}>
+                                                    ${c.nombre_comercial}
+                                                </option>
+                                            `).join('')}
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="col-md-6 mb-3">
+                                        <label>Responsable *</label>
+                                        <select class="form-select" name="id_empleado_responsable" required>
+                                            <option value="">Seleccione...</option>
+                                            ${empleadosLista.map(e => `
+                                                <option value="${e.id_empleado}" ${actividad?.id_empleado_responsable === e.id_empleado ? 'selected' : ''}>
+                                                    ${e.nombre_completo}
+                                                </option>
+                                            `).join('')}
+                                        </select>
+                                    </div>
+                                </div>
+                                
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label>Tipo de Actividad *</label>
+                                        <select class="form-select" name="id_tipo_actividad" required>
+                                            <option value="">Seleccione...</option>
+                                            ${tiposActividad.map(t => `
+                                                <option value="${t.id_tipo_actividad}" ${actividad?.id_tipo_actividad === t.id_tipo_actividad ? 'selected' : ''}>
+                                                    ${t.nombre}
+                                                </option>
+                                            `).join('')}
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="col-md-6 mb-3">
+                                        <label>Prioridad</label>
+                                        <select class="form-select" name="id_prioridad">
+                                            ${prioridades.map(p => `
+                                                <option value="${p.id_prioridad}" ${actividad?.id_prioridad === p.id_prioridad ? 'selected' : ''}>
+                                                    ${p.nombre}
+                                                </option>
+                                            `).join('')}
+                                        </select>
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label>Asunto *</label>
+                                    <input type="text" class="form-control" name="asunto" 
+                                           value="${actividad?.asunto || ''}" required>
+                                </div>
+                                
+                                <div class="row">
+                                    <div class="col-md-4 mb-3">
+                                        <label>Fecha *</label>
+                                        <input type="date" class="form-control" name="fecha" 
+                                               value="${actividad?.fecha || today}" required>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <label>Hora Inicio *</label>
+                                        <input type="time" class="form-control" name="hora_inicio" 
+                                               value="${actividad?.hora_inicio?.substring(0,5) || '09:00'}" required>
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <label>Hora Fin</label>
+                                        <input type="time" class="form-control" name="hora_fin" 
+                                               value="${actividad?.hora_fin?.substring(0,5) || ''}">
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label>Comentario</label>
+                                    <textarea class="form-control" name="comentario" rows="2">${actividad?.comentario || ''}</textarea>
+                                </div>
+                                
+                                <input type="hidden" name="id_estado_actividad" value="${actividad?.id_estado_actividad || 1}">
+                            </form>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                            <button class="btn btn-primary" onclick="guardarActividad()">Guardar</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        const modalExistente = document.getElementById('modalActividad');
+        if (modalExistente) modalExistente.remove();
+        
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+        
+        const modal = new bootstrap.Modal(document.getElementById('modalActividad'));
+        modal.show();
+    });
+}
+
+    async function guardarActividad() {
+        const form = document.getElementById('formActividad');
+        const formData = new FormData(form);
+        const data = Object.fromEntries(formData.entries());
+        const id = data.id_actividad;
+        
+        // Validar campos requeridos
+        if (!data.id_cliente || !data.id_empleado_responsable || !data.asunto || !data.fecha || !data.hora_inicio) {
+            mostrarMensaje('Complete los campos requeridos', 'danger');
+            return;
+        }
+        
+        try {
+            let response;
+            if (id) {
+                response = await fetch(`${API_URL}/actividades/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+            } else {
+                response = await fetch(`${API_URL}/actividades`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+            }
+            
+            if (response.ok) {
+                mostrarMensaje(id ? 'Actividad actualizada' : 'Actividad creada');
+                cerrarModal('modalActividad');
+                await cargarActividades();
+            } else {
+                const error = await response.json();
+                mostrarMensaje('Error: ' + (error.error || 'Error desconocido'), 'danger');
+            }
+            
+        } catch (error) {
+            console.error('Error:', error);
+            mostrarMensaje('Error de conexión', 'danger');
+        }
+    }
+
+    async function cambiarEstadoActividad(id, nuevoEstadoId) {
+        try {
+            const response = await fetch(`${API_URL}/actividades/${id}/estado`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id_estado_actividad: parseInt(nuevoEstadoId) })
+            });
+            
+            if (response.ok) {
+                mostrarMensaje('Estado actualizado');
+                await cargarActividades();
+            } else {
+                mostrarMensaje('Error al actualizar estado', 'danger');
+            }
+            
+        } catch (error) {
+            console.error('Error:', error);
+            mostrarMensaje('Error de conexión', 'danger');
+        }
+    }
+
+    async function eliminarActividad(id) {
+        if (!confirm('¿Eliminar esta actividad?')) return;
+        
+        try {
+            const response = await fetch(`${API_URL}/actividades/${id}`, {
+                method: 'DELETE'
+            });
+            
+            if (response.ok) {
+                mostrarMensaje('Actividad eliminada');
+                await cargarActividades();
+            } else {
+                mostrarMensaje('Error al eliminar', 'danger');
+            }
+        } catch (error) {
+            mostrarMensaje('Error de conexión', 'danger');
+        }
+    }
+
     async function init() {
         const conectado = await verificarConexion();
         if (conectado) {
             await cargarDatos();
+            await cargarCatalogosActividad();
             cambiarVista('dashboard');
         }
         document.querySelectorAll('#menuTabs .nav-link').forEach(link => {

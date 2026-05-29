@@ -223,67 +223,93 @@ app.get('/api/oportunidades', async (req, res) => {
     }
 });
 
-// POST - Crear oportunidad
-app.post('/api/oportunidades', async (req, res) => {
-    try {
-        const { 
-            nombre_oportunidad, 
-            id_cliente, 
-            id_empleado_vendedor,
-            id_tipo_oportunidad,
-            monto_potencial,
-            cierre_planificado_valor,
-            id_unidad_cierre
-        } = req.body;
-        
-        // Generar número de oportunidad
-        const numResult = await sql.query(`
-            SELECT ISNULL(MAX(CAST(REPLACE(numero_oportunidad, 'OP-', '') AS INT)), 0) + 1 AS nextNum 
-            FROM Oportunidad
-        `);
-        const numero_oportunidad = `OP-${numResult.recordset[0].nextNum}`;
-        
-        // Calcular fecha prevista (30 días por defecto si no viene)
-        const dias = cierre_planificado_valor || 30;
-        
-        await sql.query(`
-            INSERT INTO Oportunidad (
-                numero_oportunidad,
-                nombre_oportunidad,
-                id_cliente,
+    // POST - Crear oportunidad
+    app.post('/api/oportunidades', async (req, res) => {
+        try {
+            const { 
+                nombre_oportunidad, 
+                id_cliente, 
                 id_empleado_vendedor,
-                id_empleado_gerente,
                 id_tipo_oportunidad,
-                id_estado_oportunidad,
-                cierre_planificado_valor,
-                id_unidad_cierre,
-                fecha_cierre_prevista,
                 monto_potencial,
-                activo
-            ) VALUES (
-                '${numero_oportunidad}',
-                N'${nombre_oportunidad.replace(/'/g, "''")}',
-                ${id_cliente},
-                ${id_empleado_vendedor},
-                1,  -- Gerente por defecto (ID 1)
-                ${id_tipo_oportunidad || 1},
-                1,  -- Estado: Abierto
-                ${dias},
-                ${id_unidad_cierre || 1},
-                DATEADD(DAY, ${dias}, GETDATE()),
-                ${monto_potencial || 0},
-                1
-            )
-        `);
-        
-        console.log(`Oportunidad creada: ${numero_oportunidad}`);
-        res.json({ success: true, numero_oportunidad });
-        
-    } catch (err) {
-        console.error('Error POST /oportunidades:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
+                cierre_planificado_valor,
+                id_unidad_cierre
+            } = req.body;
+            
+            // Generar número de oportunidad
+            const numResult = await sql.query(`
+                SELECT ISNULL(MAX(CAST(REPLACE(numero_oportunidad, 'OP-', '') AS INT)), 0) + 1 AS nextNum 
+                FROM Oportunidad
+            `);
+            const numero_oportunidad = `OP-${numResult.recordset[0].nextNum}`;
+            
+            const dias = cierre_planificado_valor || 30;
+            
+            // Insertar oportunidad
+            const insertResult = await sql.query(`
+                INSERT INTO Oportunidad (
+                    numero_oportunidad,
+                    nombre_oportunidad,
+                    id_cliente,
+                    id_empleado_vendedor,
+                    id_empleado_gerente,
+                    id_tipo_oportunidad,
+                    id_estado_oportunidad,
+                    cierre_planificado_valor,
+                    id_unidad_cierre,
+                    fecha_cierre_prevista,
+                    monto_potencial,
+                    porcentaje_avance,
+                    activo
+                ) VALUES (
+                    '${numero_oportunidad}',
+                    N'${nombre_oportunidad.replace(/'/g, "''")}',
+                    ${id_cliente},
+                    ${id_empleado_vendedor},
+                    1,
+                    ${id_tipo_oportunidad || 1},
+                    1,
+                    ${dias},
+                    ${id_unidad_cierre || 1},
+                    DATEADD(DAY, ${dias}, GETDATE()),
+                    ${monto_potencial || 0},
+                    0,
+                    1
+                );
+                SELECT SCOPE_IDENTITY() AS id;
+            `);
+            
+            const nuevaId = insertResult.recordset[0].id;
+            
+            // Agregar etapa inicial (Calificación - 30%)
+            await sql.query(`
+                INSERT INTO Etapa_Oportunidad (
+                    id_oportunidad,
+                    id_tipo_etapa,
+                    id_empleado_ventas,
+                    fecha_inicio_etapa,
+                    monto_potencial_etapa,
+                    importe_ponderado_etapa,
+                    comentario
+                ) VALUES (
+                    ${nuevaId},
+                    1,  -- Calificación de la oportunidad
+                    ${id_empleado_vendedor},
+                    GETDATE(),
+                    ${monto_potencial || 0},
+                    ${(monto_potencial || 0) * 0.30},
+                    'Oportunidad creada'
+                )
+            `);
+            
+            console.log(`Oportunidad creada: ${numero_oportunidad}`);
+            res.json({ success: true, numero_oportunidad, id: nuevaId });
+            
+        } catch (err) {
+            console.error('Error POST /oportunidades:', err.message);
+            res.status(500).json({ error: err.message });
+        }
+    });
 
 // ========== API: CATÁLOGOS ==========
 
@@ -452,6 +478,340 @@ app.get('/api/roles', async (req, res) => {
         res.json(result.recordset);
     } catch (err) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+// ========== API: ETAPAS Y PIPELINE ==========
+
+// GET - Obtener todas las etapas
+app.get('/api/etapas', async (req, res) => {
+    try {
+        const result = await sql.query(`
+            SELECT id_tipo_etapa, nombre_etapa, porcentaje, orden
+            FROM TipoEtapa
+            ORDER BY orden
+        `);
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Error GET /etapas:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET - Oportunidades con su etapa actual (para Kanban)
+app.get('/api/oportunidades/kanban', async (req, res) => {
+    try {
+        const result = await sql.query(`
+            SELECT 
+                O.id_oportunidad,
+                O.numero_oportunidad,
+                O.nombre_oportunidad,
+                C.nombre_comercial AS cliente,
+                E.nombre_completo AS vendedor,
+                O.monto_potencial,
+                O.porcentaje_avance,
+                ISNULL(TE.id_tipo_etapa, 1) AS id_etapa_actual,
+                ISNULL(TE.nombre_etapa, 'Calificación de la oportunidad') AS etapa_nombre,
+                ISNULL(TE.orden, 1) AS etapa_orden
+            FROM Oportunidad O
+            INNER JOIN Cliente C ON O.id_cliente = C.id_cliente
+            INNER JOIN Empleado E ON O.id_empleado_vendedor = E.id_empleado
+            LEFT JOIN (
+                SELECT id_oportunidad, MAX(id_tipo_etapa) as id_tipo_etapa
+                FROM Etapa_Oportunidad
+                GROUP BY id_oportunidad
+            ) UltimaEtapa ON O.id_oportunidad = UltimaEtapa.id_oportunidad
+            LEFT JOIN TipoEtapa TE ON UltimaEtapa.id_tipo_etapa = TE.id_tipo_etapa
+            WHERE O.activo = 1
+            ORDER BY O.id_oportunidad DESC
+        `);
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Error GET /oportunidades/kanban:', err.message);
+        res.json([]);
+    }
+});
+
+// POST - Cambiar etapa de una oportunidad
+app.post('/api/oportunidades/:id/cambiar-etapa', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { id_tipo_etapa, comentario } = req.body;
+        
+        // Obtener información de la etapa
+        const etapaResult = await sql.query(`
+            SELECT porcentaje, nombre_etapa FROM TipoEtapa WHERE id_tipo_etapa = ${id_tipo_etapa}
+        `);
+        
+        if (etapaResult.recordset.length === 0) {
+            return res.status(400).json({ error: 'Etapa no válida' });
+        }
+        
+        const porcentaje = etapaResult.recordset[0].porcentaje;
+        const etapaNombre = etapaResult.recordset[0].nombre_etapa;
+        
+        // Obtener monto potencial actual de la oportunidad
+        const oppResult = await sql.query(`
+            SELECT monto_potencial, id_empleado_vendedor FROM Oportunidad WHERE id_oportunidad = ${id}
+        `);
+        
+        if (oppResult.recordset.length === 0) {
+            return res.status(404).json({ error: 'Oportunidad no encontrada' });
+        }
+        
+        const montoPotencial = oppResult.recordset[0].monto_potencial;
+        const idVendedor = oppResult.recordset[0].id_empleado_vendedor;
+        const importePonderado = montoPotencial * (porcentaje / 100);
+        
+        // 1. Insertar en el historial de etapas
+        await sql.query(`
+            INSERT INTO Etapa_Oportunidad (
+                id_oportunidad, 
+                id_tipo_etapa, 
+                id_empleado_ventas,
+                fecha_inicio_etapa,
+                monto_potencial_etapa,
+                importe_ponderado_etapa,
+                comentario
+            ) VALUES (
+                ${id},
+                ${id_tipo_etapa},
+                ${idVendedor},
+                GETDATE(),
+                ${montoPotencial},
+                ${importePonderado},
+                '${(comentario || 'Cambio de etapa').replace(/'/g, "''")}'
+            )
+        `);
+        
+        // 2. Actualizar la oportunidad con el nuevo % y monto ponderado
+        await sql.query(`
+            UPDATE Oportunidad 
+            SET porcentaje_avance = ${porcentaje},
+                monto_ponderado = ${importePonderado}
+            WHERE id_oportunidad = ${id}
+        `);
+        
+        console.log(`Oportunidad ${id} movida a etapa: ${etapaNombre} (${porcentaje}%)`);
+        
+        res.json({ 
+            success: true, 
+            message: `Oportunidad movida a "${etapaNombre}"`,
+            nuevoPorcentaje: porcentaje,
+            nuevaEtapa: etapaNombre
+        });
+        
+    } catch (err) {
+        console.error('Error POST /cambiar-etapa:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET - Oportunidades agrupadas por etapa (para estadísticas)
+app.get('/api/pipeline/stats', async (req, res) => {
+    try {
+        const result = await sql.query(`
+            SELECT 
+                TE.nombre_etapa,
+                TE.porcentaje,
+                TE.orden,
+                COUNT(O.id_oportunidad) AS cantidad,
+                ISNULL(SUM(O.monto_potencial), 0) AS monto_total
+            FROM TipoEtapa TE
+            LEFT JOIN (
+                SELECT DISTINCT O.id_oportunidad, O.monto_potencial, TE2.id_tipo_etapa
+                FROM Oportunidad O
+                LEFT JOIN Etapa_Oportunidad EO ON O.id_oportunidad = EO.id_oportunidad
+                LEFT JOIN TipoEtapa TE2 ON EO.id_tipo_etapa = TE2.id_tipo_etapa
+                WHERE O.activo = 1
+            ) O ON TE.id_tipo_etapa = O.id_tipo_etapa
+            GROUP BY TE.id_tipo_etapa, TE.nombre_etapa, TE.porcentaje, TE.orden
+            ORDER BY TE.orden
+        `);
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Error GET /pipeline/stats:', err.message);
+        res.json([]);
+    }
+});
+
+// ========== API: ACTIVIDADES ==========
+
+// GET - Listar actividades
+app.get('/api/actividades', async (req, res) => {
+    try {
+        const result = await sql.query(`
+            SELECT 
+                A.id_actividad,
+                A.numero_actividad,
+                A.asunto,
+                A.fecha,
+                A.hora_inicio,
+                A.hora_fin,
+                A.duracion_minutos,
+                C.nombre_comercial AS cliente,
+                E.nombre_completo AS responsable,
+                TA.nombre AS tipo_actividad,
+                P.nombre AS prioridad,
+                EA.nombre AS estado
+            FROM Actividad A
+            INNER JOIN Cliente C ON A.id_cliente = C.id_cliente
+            INNER JOIN Empleado E ON A.id_empleado_responsable = E.id_empleado
+            INNER JOIN TipoActividad TA ON A.id_tipo_actividad = TA.id_tipo_actividad
+            INNER JOIN Prioridad P ON A.id_prioridad = P.id_prioridad
+            INNER JOIN EstadoActividad EA ON A.id_estado_actividad = EA.id_estado_actividad
+            WHERE A.fecha_creacion IS NOT NULL
+            ORDER BY A.fecha DESC, A.hora_inicio DESC
+        `);
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Error GET /actividades:', err.message);
+        res.json([]);
+    }
+});
+
+// GET - Actividades por oportunidad
+app.get('/api/actividades/oportunidad/:id', async (req, res) => {
+    try {
+        const result = await sql.query(`
+            SELECT 
+                A.id_actividad,
+                A.numero_actividad,
+                A.asunto,
+                A.fecha,
+                A.hora_inicio,
+                TA.nombre AS tipo_actividad,
+                EA.nombre AS estado
+            FROM Actividad A
+            INNER JOIN TipoActividad TA ON A.id_tipo_actividad = TA.id_tipo_actividad
+            INNER JOIN EstadoActividad EA ON A.id_estado_actividad = EA.id_estado_actividad
+            WHERE A.id_cliente IN (
+                SELECT id_cliente FROM Oportunidad WHERE id_oportunidad = ${req.params.id}
+            )
+            ORDER BY A.fecha DESC
+        `);
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Error GET /actividades/oportunidad:', err.message);
+        res.json([]);
+    }
+});
+
+// POST - Crear actividad
+app.post('/api/actividades', async (req, res) => {
+    try {
+        const { 
+            id_cliente, 
+            id_empleado_responsable,
+            id_tipo_actividad,
+            asunto,
+            fecha,
+            hora_inicio,
+            hora_fin,
+            id_prioridad,
+            comentario,
+            id_estado_actividad
+        } = req.body;
+        
+        // Validar campos requeridos
+        if (!id_cliente || !id_empleado_responsable || !asunto || !fecha || !hora_inicio) {
+            return res.status(400).json({ error: 'Faltan campos requeridos' });
+        }
+        
+        // Generar número de actividad
+        const numResult = await sql.query(`
+            SELECT ISNULL(MAX(CAST(REPLACE(numero_actividad, 'ACT-', '') AS INT)), 0) + 1 AS nextNum 
+            FROM Actividad
+        `);
+        const numero_actividad = `ACT-${numResult.recordset[0].nextNum}`;
+        
+        // Calcular duración si hay hora_fin
+        let duracion = null;
+        if (hora_inicio && hora_fin) {
+            duracion = `DATEDIFF(MINUTE, '${hora_inicio}', '${hora_fin}')`;
+        }
+        
+        await sql.query(`
+            INSERT INTO Actividad (
+                numero_actividad,
+                id_cliente,
+                id_empleado_responsable,
+                id_tipo_actividad,
+                asunto,
+                fecha,
+                hora_inicio,
+                hora_fin,
+                duracion_minutos,
+                id_prioridad,
+                comentario,
+                id_estado_actividad
+            ) VALUES (
+                '${numero_actividad}',
+                ${id_cliente},
+                ${id_empleado_responsable},
+                ${id_tipo_actividad || 1},
+                N'${asunto.replace(/'/g, "''")}',
+                '${fecha}',
+                '${hora_inicio}',
+                ${hora_fin ? `'${hora_fin}'` : 'NULL'},
+                ${duracion || 'NULL'},
+                ${id_prioridad || 2},
+                N'${(comentario || '').replace(/'/g, "''")}',
+                ${id_estado_actividad || 1}
+            )
+        `);
+        
+        console.log(`Actividad creada: ${numero_actividad}`);
+        res.json({ success: true, message: 'Actividad creada correctamente', numero_actividad });
+        
+    } catch (err) {
+        console.error('Error POST /actividades:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// PUT - Actualizar estado de actividad
+app.put('/api/actividades/:id/estado', async (req, res) => {
+    try {
+        const { id_estado_actividad } = req.body;
+        
+        await sql.query(`
+            UPDATE Actividad SET id_estado_actividad = ${id_estado_actividad}
+            WHERE id_actividad = ${req.params.id}
+        `);
+        
+        res.json({ success: true, message: 'Estado actualizado' });
+    } catch (err) {
+        console.error('Error PUT /actividades/estado:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET - Catálogos para actividades
+app.get('/api/tipos-actividad', async (req, res) => {
+    try {
+        const result = await sql.query('SELECT id_tipo_actividad, codigo, nombre FROM TipoActividad');
+        res.json(result.recordset);
+    } catch (err) {
+        res.json([]);
+    }
+});
+
+app.get('/api/estados-actividad', async (req, res) => {
+    try {
+        const result = await sql.query('SELECT id_estado_actividad, codigo, nombre FROM EstadoActividad');
+        res.json(result.recordset);
+    } catch (err) {
+        res.json([]);
+    }
+});
+
+app.get('/api/prioridades', async (req, res) => {
+    try {
+        const result = await sql.query('SELECT id_prioridad, codigo, nombre FROM Prioridad');
+        res.json(result.recordset);
+    } catch (err) {
+        res.json([]);
     }
 });
 
