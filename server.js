@@ -498,7 +498,7 @@ app.get('/api/etapas', async (req, res) => {
     }
 });
 
-// GET - Oportunidades con su etapa actual (para Kanban)
+// GET - Oportunidades para Kanban
 app.get('/api/oportunidades/kanban', async (req, res) => {
     try {
         const result = await sql.query(`
@@ -506,32 +506,36 @@ app.get('/api/oportunidades/kanban', async (req, res) => {
                 O.id_oportunidad,
                 O.numero_oportunidad,
                 O.nombre_oportunidad,
-                C.nombre_comercial AS cliente,
-                E.nombre_completo AS vendedor,
-                O.monto_potencial,
-                O.porcentaje_avance,
+                ISNULL(C.nombre_comercial, 'Sin cliente') AS cliente,
+                ISNULL(E.nombre_completo, 'Sin vendedor') AS vendedor,
+                ISNULL(O.monto_potencial, 0) AS monto_potencial,
+                ISNULL(O.porcentaje_avance, 0) AS porcentaje_avance,
                 ISNULL(TE.id_tipo_etapa, 1) AS id_etapa_actual,
-                ISNULL(TE.nombre_etapa, 'Calificación de la oportunidad') AS etapa_nombre,
+                ISNULL(TE.nombre_etapa, 'Calificación') AS etapa_nombre,
                 ISNULL(TE.orden, 1) AS etapa_orden
             FROM Oportunidad O
-            INNER JOIN Cliente C ON O.id_cliente = C.id_cliente
-            INNER JOIN Empleado E ON O.id_empleado_vendedor = E.id_empleado
-            LEFT JOIN (
-                SELECT id_oportunidad, MAX(id_tipo_etapa) as id_tipo_etapa
-                FROM Etapa_Oportunidad
-                GROUP BY id_oportunidad
-            ) UltimaEtapa ON O.id_oportunidad = UltimaEtapa.id_oportunidad
+            LEFT JOIN Cliente C ON O.id_cliente = C.id_cliente
+            LEFT JOIN Empleado E ON O.id_empleado_vendedor = E.id_empleado
+            OUTER APPLY (
+                SELECT TOP 1 EO.id_tipo_etapa
+                FROM Etapa_Oportunidad EO
+                WHERE EO.id_oportunidad = O.id_oportunidad
+                ORDER BY EO.fecha_inicio_etapa DESC, EO.id_etapa_oportunidad DESC
+            ) UltimaEtapa
             LEFT JOIN TipoEtapa TE ON UltimaEtapa.id_tipo_etapa = TE.id_tipo_etapa
             WHERE O.activo = 1
-            ORDER BY O.id_oportunidad DESC
+            ORDER BY O.id_oportunidad DESC;
         `);
+        
+        console.log('Kanban OK:', result.recordset.length, 'oportunidades');
         res.json(result.recordset);
+        
     } catch (err) {
-        console.error('Error GET /oportunidades/kanban:', err.message);
+        console.error('Error kanban:', err.message);
+        // En caso de error, devolver array vacío
         res.json([]);
     }
 });
-
 // POST - Cambiar etapa de una oportunidad
 app.post('/api/oportunidades/:id/cambiar-etapa', async (req, res) => {
     try {
@@ -653,14 +657,17 @@ app.get('/api/actividades', async (req, res) => {
                 E.nombre_completo AS responsable,
                 TA.nombre AS tipo_actividad,
                 P.nombre AS prioridad,
-                EA.nombre AS estado
+                EA.nombre AS estado,
+                O.id_oportunidad,
+                O.numero_oportunidad,
+                O.nombre_oportunidad AS oportunidad_nombre
             FROM Actividad A
             INNER JOIN Cliente C ON A.id_cliente = C.id_cliente
             INNER JOIN Empleado E ON A.id_empleado_responsable = E.id_empleado
             INNER JOIN TipoActividad TA ON A.id_tipo_actividad = TA.id_tipo_actividad
             INNER JOIN Prioridad P ON A.id_prioridad = P.id_prioridad
             INNER JOIN EstadoActividad EA ON A.id_estado_actividad = EA.id_estado_actividad
-            WHERE A.fecha_creacion IS NOT NULL
+            LEFT JOIN Oportunidad O ON A.id_oportunidad = O.id_oportunidad
             ORDER BY A.fecha DESC, A.hora_inicio DESC
         `);
         res.json(result.recordset);
@@ -671,7 +678,7 @@ app.get('/api/actividades', async (req, res) => {
 });
 
 // GET - Actividades por oportunidad
-app.get('/api/actividades/oportunidad/:id', async (req, res) => {
+app.get('/api/oportunidades/:id/actividades', async (req, res) => {
     try {
         const result = await sql.query(`
             SELECT 
@@ -680,19 +687,22 @@ app.get('/api/actividades/oportunidad/:id', async (req, res) => {
                 A.asunto,
                 A.fecha,
                 A.hora_inicio,
+                A.hora_fin,
                 TA.nombre AS tipo_actividad,
-                EA.nombre AS estado
+                P.nombre AS prioridad,
+                EA.nombre AS estado,
+                E.nombre_completo AS responsable
             FROM Actividad A
             INNER JOIN TipoActividad TA ON A.id_tipo_actividad = TA.id_tipo_actividad
+            INNER JOIN Prioridad P ON A.id_prioridad = P.id_prioridad
             INNER JOIN EstadoActividad EA ON A.id_estado_actividad = EA.id_estado_actividad
-            WHERE A.id_cliente IN (
-                SELECT id_cliente FROM Oportunidad WHERE id_oportunidad = ${req.params.id}
-            )
-            ORDER BY A.fecha DESC
+            INNER JOIN Empleado E ON A.id_empleado_responsable = E.id_empleado
+            WHERE A.id_oportunidad = ${req.params.id}
+            ORDER BY A.fecha DESC, A.hora_inicio DESC
         `);
         res.json(result.recordset);
     } catch (err) {
-        console.error('Error GET /actividades/oportunidad:', err.message);
+        console.error('Error GET /oportunidades/:id/actividades:', err.message);
         res.json([]);
     }
 });
@@ -710,7 +720,8 @@ app.post('/api/actividades', async (req, res) => {
             hora_fin,
             id_prioridad,
             comentario,
-            id_estado_actividad
+            id_estado_actividad,
+            id_oportunidad
         } = req.body;
         
         // Validar campos requeridos
@@ -744,7 +755,8 @@ app.post('/api/actividades', async (req, res) => {
                 duracion_minutos,
                 id_prioridad,
                 comentario,
-                id_estado_actividad
+                id_estado_actividad,
+                id_oportunidad
             ) VALUES (
                 '${numero_actividad}',
                 ${id_cliente},
@@ -757,7 +769,8 @@ app.post('/api/actividades', async (req, res) => {
                 ${duracion || 'NULL'},
                 ${id_prioridad || 2},
                 N'${(comentario || '').replace(/'/g, "''")}',
-                ${id_estado_actividad || 1}
+                ${id_estado_actividad || 1},
+                ${id_oportunidad || 'NULL'}
             )
         `);
         
@@ -812,6 +825,49 @@ app.get('/api/prioridades', async (req, res) => {
         res.json(result.recordset);
     } catch (err) {
         res.json([]);
+    }
+});
+
+// GET - Oportunidad por ID (detalle)
+app.get('/api/oportunidades/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        
+        const result = await sql.query(`
+            SELECT 
+                O.id_oportunidad,
+                O.numero_oportunidad,
+                O.nombre_oportunidad,
+                C.nombre_comercial AS cliente,
+                C.id_cliente,
+                E.nombre_completo AS vendedor,
+                E.id_empleado,
+                O.monto_potencial,
+                O.porcentaje_avance,
+                O.fecha_inicio,
+                O.fecha_cierre_prevista,
+                TE.nombre_etapa AS etapa_actual
+            FROM Oportunidad O
+            INNER JOIN Cliente C ON O.id_cliente = C.id_cliente
+            INNER JOIN Empleado E ON O.id_empleado_vendedor = E.id_empleado
+            LEFT JOIN (
+                SELECT id_oportunidad, MAX(id_tipo_etapa) as id_tipo_etapa
+                FROM Etapa_Oportunidad
+                GROUP BY id_oportunidad
+            ) UltimaEtapa ON O.id_oportunidad = UltimaEtapa.id_oportunidad
+            LEFT JOIN TipoEtapa TE ON UltimaEtapa.id_tipo_etapa = TE.id_tipo_etapa
+            WHERE O.id_oportunidad = ${id}
+        `);
+        
+        if (result.recordset.length === 0) {
+            return res.status(404).json({ error: 'Oportunidad no encontrada' });
+        }
+        
+        res.json(result.recordset[0]);
+        
+    } catch (err) {
+        console.error('Error GET /oportunidades/:id:', err.message);
+        res.status(500).json({ error: err.message });
     }
 });
 

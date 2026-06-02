@@ -223,23 +223,29 @@
                 </div>
                 <div class="table-responsive">
                     <table class="table table-hover">
-                        <thead><tr><th>#</th><th>Nombre</th><th>Cliente</th><th>Vendedor</th><th>Monto</th></tr></thead>
+                        <thead><tr><th>#</th><th>Nombre</th><th>Cliente</th><th>Vendedor</th><th>Monto</th><th>Acciones</th></tr></thead>
                         <tbody>
                             ${oportunidades.map(opp => `
-                                <tr><td>${opp.numero_oportunidad || opp.id_oportunidad}</td>
-                                <td>${opp.nombre_oportunidad || '-'}</td>
-                                <td>${opp.cliente || '-'}</td>
-                                <td>${opp.vendedor || '-'}</td>
-                                <td>Q${(parseFloat(opp.monto_potencial) || 0).toLocaleString()}</td></tr>
+                                <tr>
+                                    <td>${opp.numero_oportunidad || opp.id_oportunidad}</td>
+                                    <td>${opp.nombre_oportunidad || '-'}</td>
+                                    <td>${opp.cliente || '-'}</td>
+                                    <td>${opp.vendedor || '-'}</td>
+                                    <td>Q${(parseFloat(opp.monto_potencial) || 0).toLocaleString()}</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-info" onclick="verDetalleOportunidad(${opp.id_oportunidad})">
+                                            <i class="bi bi-eye"></i> Ver
+                                        </button>
+                                    </td>
+                                </tr>
                             `).join('')}
-                            ${oportunidades.length === 0 ? '<tr><td colspan="5" class="text-center">No hay oportunidades creadas</td></tr>' : ''}
+                            ${oportunidades.length === 0 ? '<tr><td colspan="6" class="text-center">No hay oportunidades creadas</td>' : ''}
                         </tbody>
                     </table>
                 </div>
             </div>
         `;
     }
-
     function renderClientes() {
         return `
             <div class="card-modern card p-4">
@@ -774,102 +780,114 @@
     }
 
     async function cargarKanban() {
-        try {
-            // Cargar etapas y oportunidades
-            const [etapasRes, oportunidadesRes] = await Promise.all([
-                fetch(`${API_URL}/etapas`),
-                fetch(`${API_URL}/oportunidades/kanban`)
-            ]);
-            
-            etapas = await etapasRes.json();
-            oportunidadesKanban = await oportunidadesRes.json();
-            
-            console.log('Etapas:', etapas);
-            console.log('Oportunidades:', oportunidadesKanban);
-            
-            const container = document.getElementById('kanbanContainer');
-            if (!container) return;
-            
-            if (etapas.length === 0) {
-                container.innerHTML = '<div class="alert alert-warning">No hay etapas configuradas</div>';
-                return;
+    try {
+        // Cargar etapas y oportunidades
+        const [etapasRes, oportunidadesRes] = await Promise.all([
+            fetch(`${API_URL}/etapas`),
+            fetch(`${API_URL}/oportunidades/kanban`)
+        ]);
+        
+        etapas = await etapasRes.json();
+        const oportunidadesData = await oportunidadesRes.json();
+        
+        console.log('Etapas:', etapas);
+        console.log('Oportunidades RAW:', oportunidadesData);
+        
+        if (Array.isArray(oportunidadesData)) {
+            oportunidadesKanban = oportunidadesData;
+        } else {
+            console.error('oportunidadesKanban NO es un array, es:', typeof oportunidadesData);
+            console.log('Contenido:', oportunidadesData);
+            // Si es un objeto de error, mostrarlo
+            if (oportunidadesData.error) {
+                console.error('Error del servidor:', oportunidadesData.error);
             }
+            oportunidadesKanban = [];  // Convertir a array vacío para evitar el error
+        }
+        
+        console.log('Oportunidades Kanban (después validación):', oportunidadesKanban.length);
+        
+        const container = document.getElementById('kanbanContainer');
+        if (!container) return;
+        
+        if (etapas.length === 0) {
+            container.innerHTML = '<div class="alert alert-warning">No hay etapas configuradas</div>';
+            return;
+        }
+        
+        // Construir columnas Kanban
+        let html = '';
+        
+        for (const etapa of etapas) {
+            const oportunidadesEtapa = oportunidadesKanban.filter(opp => 
+                opp.id_etapa_actual === etapa.id_tipo_etapa || 
+                (opp.id_etapa_actual === null && etapa.orden === 1)
+            );
             
-            // Construir columnas Kanban
-            let html = '';
+            const totalMonto = oportunidadesEtapa.reduce((sum, opp) => sum + (parseFloat(opp.monto_potencial) || 0), 0);
             
-            for (const etapa of etapas) {
-                // Filtrar oportunidades de esta etapa
-                const oportunidadesEtapa = oportunidadesKanban.filter(opp => 
-                    opp.id_etapa_actual === etapa.id_tipo_etapa || 
-                    (opp.id_etapa_actual === null && etapa.orden === 1)
-                );
-                
-                const totalMonto = oportunidadesEtapa.reduce((sum, opp) => sum + (parseFloat(opp.monto_potencial) || 0), 0);
-                
-                html += `
-                    <div class="col-md-3 mb-3" style="min-width: 320px;">
-                        <div class="kanban-column" style="background: #f8f9fa; border-radius: 12px; padding: 12px; height: 100%;">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">
-                                    ${etapa.nombre_etapa}
-                                    <span class="badge bg-secondary ms-1">${etapa.porcentaje}%</span>
-                                </h6>
-                                <span class="badge bg-primary rounded-pill">${oportunidadesEtapa.length}</span>
-                            </div>
-                            <div class="small text-muted mb-2">
-                                $${totalMonto.toLocaleString()}
-                            </div>
-                            <div class="kanban-cards" data-etapa-id="${etapa.id_tipo_etapa}">
-                                ${oportunidadesEtapa.map(opp => `
-                                    <div class="kanban-card" data-id="${opp.id_oportunidad}">
-                                        <div class="d-flex justify-content-between align-items-start">
-                                            <strong>${opp.cliente || 'Sin cliente'}</strong>
-                                            <div class="dropdown">
-                                                <button class="btn btn-sm btn-light btn-action" data-bs-toggle="dropdown">
-                                                    <i class="bi bi-three-dots-vertical"></i>
-                                                </button>
-                                                <ul class="dropdown-menu">
-                                                    ${etapas.map(e => `
-                                                        <li>
-                                                            <a class="dropdown-item ${e.id_tipo_etapa === etapa.id_tipo_etapa ? 'disabled' : ''}" 
-                                                            href="#" onclick="cambiarEtapa(${opp.id_oportunidad}, ${e.id_tipo_etapa}, '${e.nombre_etapa}')">
-                                                                ${e.nombre_etapa} (${e.porcentaje}%)
-                                                            </a>
-                                                        </li>
-                                                    `).join('')}
-                                                </ul>
-                                            </div>
-                                        </div>
-                                        <div class="small text-muted">${opp.vendedor || 'Sin vendedor'}</div>
-                                        <div class="fw-bold mt-1">$${(parseFloat(opp.monto_potencial) || 0).toLocaleString()}</div>
-                                        <div class="progress-custom mt-2" style="background: #e9ecef; border-radius: 4px; height: 8px;">
-                                            <div style="width: ${opp.porcentaje_avance || 0}%; background: linear-gradient(90deg, #667eea, #764ba2); border-radius: 4px; height: 8px; transition: width 0.3s;"></div>
-                                        </div>
-                                        <div class="small text-muted mt-1">${opp.numero_oportunidad || 'OP-' + opp.id_oportunidad}</div>
-                                    </div>
-                                `).join('')}
-                                ${oportunidadesEtapa.length === 0 ? '<div class="text-center text-muted small p-3">Sin oportunidades</div>' : ''}
-                            </div>
-                            <button class="btn btn-sm btn-outline-primary w-100 mt-2" onclick="crearOportunidadDesdeKanban(${etapa.id_tipo_etapa})">
-                                <i class="bi bi-plus"></i> Nueva oportunidad
-                            </button>
+            html += `
+                <div class="col-md-3 mb-3" style="min-width: 320px;">
+                    <div class="kanban-column" style="background: #f8f9fa; border-radius: 12px; padding: 12px; height: 100%;">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6 class="mb-0">
+                                ${etapa.nombre_etapa}
+                                <span class="badge bg-secondary ms-1">${etapa.porcentaje}%</span>
+                            </h6>
+                            <span class="badge bg-primary rounded-pill">${oportunidadesEtapa.length}</span>
                         </div>
+                        <div class="small text-muted mb-2">
+                            $${totalMonto.toLocaleString()}
+                        </div>
+                        <div class="kanban-cards" data-etapa-id="${etapa.id_tipo_etapa}">
+                            ${oportunidadesEtapa.map(opp => `
+                                <div class="kanban-card" data-id="${opp.id_oportunidad}">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <strong>${opp.cliente || 'Sin cliente'}</strong>
+                                        <div class="dropdown">
+                                            <button class="btn btn-sm btn-light btn-action" data-bs-toggle="dropdown">
+                                                <i class="bi bi-three-dots-vertical"></i>
+                                            </button>
+                                            <ul class="dropdown-menu">
+                                                ${etapas.map(e => `
+                                                    <li>
+                                                        <a class="dropdown-item ${e.id_tipo_etapa === etapa.id_tipo_etapa ? 'disabled' : ''}" 
+                                                        href="#" onclick="cambiarEtapa(${opp.id_oportunidad}, ${e.id_tipo_etapa}, '${e.nombre_etapa}')">
+                                                            ${e.nombre_etapa} (${e.porcentaje}%)
+                                                        </a>
+                                                    </li>
+                                                `).join('')}
+                                            </ul>
+                                        </div>
+                                    </div>
+                                    <div class="small text-muted">${opp.vendedor || 'Sin vendedor'}</div>
+                                    <div class="fw-bold mt-1">$${(parseFloat(opp.monto_potencial) || 0).toLocaleString()}</div>
+                                    <div class="progress-custom mt-2" style="background: #e9ecef; border-radius: 4px; height: 8px;">
+                                        <div style="width: ${opp.porcentaje_avance || 0}%; background: linear-gradient(90deg, #667eea, #764ba2); border-radius: 4px; height: 8px; transition: width 0.3s;"></div>
+                                    </div>
+                                    <div class="small text-muted mt-1">${opp.numero_oportunidad || 'OP-' + opp.id_oportunidad}</div>
+                                </div>
+                            `).join('')}
+                            ${oportunidadesEtapa.length === 0 ? '<div class="text-center text-muted small p-3">Sin oportunidades</div>' : ''}
+                        </div>
+                        <button class="btn btn-sm btn-outline-primary w-100 mt-2" onclick="crearOportunidadDesdeKanban(${etapa.id_tipo_etapa})">
+                            <i class="bi bi-plus"></i> Nueva oportunidad
+                        </button>
                     </div>
-                `;
-            }
-            
-            container.innerHTML = html;
-            
-        } catch (error) {
-            console.error('Error cargando Kanban:', error);
-            const container = document.getElementById('kanbanContainer');
-            if (container) {
-                container.innerHTML = `<div class="alert alert-danger">Error al cargar: ${error.message}</div>`;
-            }
+                </div>
+            `;
+        }
+        
+        container.innerHTML = html;
+        
+    } catch (error) {
+        console.error('Error cargando Kanban:', error);
+        const container = document.getElementById('kanbanContainer');
+        if (container) {
+            container.innerHTML = `<div class="alert alert-danger">Error al cargar: ${error.message}</div>`;
         }
     }
-
+}
     async function cambiarEtapa(idOportunidad, nuevaEtapaId, etapaNombre) {
         if (!confirm(`¿Mover esta oportunidad a "${etapaNombre}"?`)) return;
         
@@ -918,91 +936,92 @@ let prioridades = [];
 // ========== VISTA: ACTIVIDADES ==========
 
     function renderActividades() {
-    return `
-        <div class="card-modern card p-4">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <h4><i class="bi bi-calendar-check"></i> Gestión de Actividades</h4>
-                <button class="btn btn-primary btn-custom" onclick="mostrarFormActividad()">
-                    <i class="bi bi-plus-circle"></i> Nueva Actividad
-                </button>
+        return `
+            <div class="card-modern card p-4">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h4><i class="bi bi-calendar-check"></i> Gestión de Actividades</h4>
+                    <button class="btn btn-primary btn-custom" onclick="mostrarFormActividad()">
+                        <i class="bi bi-plus-circle"></i> Nueva Actividad
+                    </button>
+                </div>
+                
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Asunto</th>
+                                <th>Cliente</th>
+                                <th>Oportunidad</th>
+                                <th>Responsable</th>
+                                <th>Tipo</th>
+                                <th>Fecha</th>
+                                <th>Prioridad</th>
+                                <th>Estado</th>
+                                <th>Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tablaActividades">
+                            <tr><td colspan="10" class="text-center">Cargando...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
-            
-            <div class="table-responsive">
-                <table class="table table-hover">
-                    <thead class="table-light">
-                        <tr>
-                            <th>#</th>
-                            <th>Asunto</th>
-                            <th>Cliente</th>
-                            <th>Responsable</th>
-                            <th>Tipo</th>
-                            <th>Fecha</th>
-                            <th>Hora</th>
-                            <th>Prioridad</th>
-                            <th>Estado</th>
-                            <th>Acciones</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tablaActividades">
-                        <tr><td colspan="10" class="text-center">Cargando...<td><tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    `;
-}
-
+        `;
+    }
+    
     async function cargarActividades() {
-    try {
-        const response = await fetch(`${API_URL}/actividades`);
-        actividades = await response.json();
-        
-        const tbody = document.getElementById('tablaActividades');
-        if (!tbody) return;
-        
-        if (actividades.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="10" class="text-center">No hay actividades registradas</td></tr>';
-            return;
-        }
-        
-        tbody.innerHTML = actividades.map(act => `
-            <tr>
-                <td><small>${act.numero_actividad || act.id_actividad}</small></td>
-                <td><strong>${act.asunto}</strong></td>
-                <td>${act.cliente || '-'}</td>
-                <td>${act.responsable || '-'}</td>
-                <td><span class="badge bg-info">${act.tipo_actividad}</span></td>
-                <td>${new Date(act.fecha).toLocaleDateString()}</td>
-                <td><small>${act.hora_inicio?.substring(0,5) || '-'}</small></td>
-                <td>
-                    ${act.prioridad === 'Alta' ? '<span class="badge bg-danger">Alta</span>' : 
-                      act.prioridad === 'Normal' ? '<span class="badge bg-warning">Normal</span>' : 
-                      '<span class="badge bg-secondary">Baja</span>'}
-                </td>
-                <td>
-                    <select class="form-select form-select-sm" style="width: 120px;" 
+        try {
+            const response = await fetch(`${API_URL}/actividades`);
+            actividades = await response.json();
+            
+            const tbody = document.getElementById('tablaActividades');
+            if (!tbody) return;
+            
+            if (actividades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="10" class="text-center">No hay actividades registradas</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = actividades.map(act => `
+                <tr>
+                    <td><small>${act.numero_actividad || act.id_actividad}</small></td>
+                    <td><strong>${act.asunto}</strong></td>
+                    <td>${act.cliente || '-'}</td>
+                    <td>${act.oportunidad_nombre ? `<span class="badge bg-info">${act.numero_oportunidad}</span><br><small>${act.oportunidad_nombre}</small>` : '-'}</td>
+                    <td>${act.responsable || '-'}</td>
+                    <td><span class="badge bg-secondary">${act.tipo_actividad}</span></td>
+                    <td>${new Date(act.fecha).toLocaleDateString()}</td>
+                    <td>
+                        ${act.prioridad === 'Alto' ? '<span class="badge bg-danger">Alta</span>' : 
+                        act.prioridad === 'Normal' ? '<span class="badge bg-warning">Normal</span>' : 
+                        '<span class="badge bg-secondary">Baja</span>'}
+                    </td>
+                    <td>
+                        <select class="form-select form-select-sm" style="width: 130px;" 
                             onchange="cambiarEstadoActividad(${act.id_actividad}, this.value)">
                         <option value="1" ${act.estado === 'En Proceso' ? 'selected' : ''}>En Proceso</option>
                         <option value="2" ${act.estado === 'En Espera' ? 'selected' : ''}>En Espera</option>
                         <option value="3" ${act.estado === 'Concluido' ? 'selected' : ''}>Concluido</option>
                         <option value="4" ${act.estado === 'No Iniciado' ? 'selected' : ''}>No Iniciado</option>
+                        <option value="5" ${act.estado === 'Inactivo' ? 'selected' : ''}>Inactivo</option>
+                        <option value="6" ${act.estado === 'Cerrado' ? 'selected' : ''}>Cerrado</option>
                     </select>
-                </td>
-                <td>
-                    <button class="btn btn-sm btn-outline-danger" onclick="eliminarActividad(${act.id_actividad})">
-                        <i class="bi bi-trash"></i>
-                    </button>
-                </td>
-            </tr>
-        `).join('');
-        
-    } catch (error) {
-        console.error('Error cargando actividades:', error);
-        const tbody = document.getElementById('tablaActividades');
-        if (tbody) tbody.innerHTML = '<tr><td colspan="10" class="text-center text-danger">Error cargando datos</td></tr>';
+                    </td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-danger" onclick="eliminarActividad(${act.id_actividad})">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+            
+        } catch (error) {
+            console.error('Error cargando actividades:', error);
+            const tbody = document.getElementById('tablaActividades');
+            if (tbody) tbody.innerHTML = '<tr><td colspan="10" class="text-center text-danger">Error cargando datos</td></tr>';
+        }
     }
-}
-
     async function cargarCatalogosActividad() {
     try {
         const [tiposRes, estadosRes, prioridadesRes] = await Promise.all([
@@ -1021,130 +1040,152 @@ let prioridades = [];
 }
 
     function mostrarFormActividad(actividad = null) {
-    const esEdicion = actividad !== null;
-    const titulo = esEdicion ? 'Editar Actividad' : 'Nueva Actividad';
-    
-    Promise.all([
-        fetch(`${API_URL}/clientes`).then(r => r.json()),
-        fetch(`${API_URL}/empleados/activos`).then(r => r.json())
-    ]).then(([clientesLista, empleadosLista]) => {
+        const oportunidadPreSeleccionada = localStorage.getItem('oportunidadParaActividad');
+        if (oportunidadPreSeleccionada) {
+            localStorage.removeItem('oportunidadParaActividad');
+        }
+        const esEdicion = actividad !== null;
+        const titulo = esEdicion ? 'Editar Actividad' : 'Nueva Actividad';
         
-        const today = new Date().toISOString().split('T')[0];
-        
-        const modalHTML = `
-            <div class="modal fade" id="modalActividad" tabindex="-1" data-bs-backdrop="static">
-                <div class="modal-dialog modal-lg">
-                    <div class="modal-content">
-                        <div class="modal-header bg-primary text-white">
-                            <h5 class="modal-title">${titulo}</h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body">
-                            <form id="formActividad">
-                                <input type="hidden" name="id_actividad" value="${actividad?.id_actividad || ''}">
-                                
-                                <div class="row">
-                                    <div class="col-md-6 mb-3">
-                                        <label>Cliente *</label>
-                                        <select class="form-select" name="id_cliente" required>
-                                            <option value="">Seleccione...</option>
-                                            ${clientesLista.map(c => `
-                                                <option value="${c.id_cliente}" ${actividad?.id_cliente === c.id_cliente ? 'selected' : ''}>
-                                                    ${c.nombre_comercial}
-                                                </option>
-                                            `).join('')}
-                                        </select>
+        Promise.all([
+            fetch(`${API_URL}/clientes`).then(r => r.json()),
+            fetch(`${API_URL}/empleados/activos`).then(r => r.json()),
+            fetch(`${API_URL}/oportunidades`).then(r => r.json())  // 👈 NUEVO: Cargar oportunidades
+        ]).then(([clientesLista, empleadosLista, oportunidadesLista]) => {
+            
+            const today = new Date().toISOString().split('T')[0];
+            
+            const modalHTML = `
+                <div class="modal fade" id="modalActividad" tabindex="-1" data-bs-backdrop="static">
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content">
+                            <div class="modal-header bg-primary text-white">
+                                <h5 class="modal-title">${titulo}</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <form id="formActividad">
+                                    <input type="hidden" name="id_actividad" value="${actividad?.id_actividad || ''}">
+                                    
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label>Cliente *</label>
+                                            <select class="form-select" name="id_cliente" required>
+                                                <option value="">Seleccione...</option>
+                                                ${clientesLista.map(c => `
+                                                    <option value="${c.id_cliente}" ${actividad?.id_cliente === c.id_cliente ? 'selected' : ''}>
+                                                        ${c.nombre_comercial}
+                                                    </option>
+                                                `).join('')}
+                                            </select>
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label>Responsable *</label>
+                                            <select class="form-select" name="id_empleado_responsable" required>
+                                                <option value="">Seleccione...</option>
+                                                ${empleadosLista.map(e => `
+                                                    <option value="${e.id_empleado}" ${actividad?.id_empleado_responsable === e.id_empleado ? 'selected' : ''}>
+                                                        ${e.nombre_completo}
+                                                    </option>
+                                                `).join('')}
+                                            </select>
+                                        </div>
                                     </div>
                                     
-                                    <div class="col-md-6 mb-3">
-                                        <label>Responsable *</label>
-                                        <select class="form-select" name="id_empleado_responsable" required>
-                                            <option value="">Seleccione...</option>
-                                            ${empleadosLista.map(e => `
-                                                <option value="${e.id_empleado}" ${actividad?.id_empleado_responsable === e.id_empleado ? 'selected' : ''}>
-                                                    ${e.nombre_completo}
-                                                </option>
-                                            `).join('')}
-                                        </select>
-                                    </div>
-                                </div>
-                                
-                                <div class="row">
-                                    <div class="col-md-6 mb-3">
-                                        <label>Tipo de Actividad *</label>
-                                        <select class="form-select" name="id_tipo_actividad" required>
-                                            <option value="">Seleccione...</option>
-                                            ${tiposActividad.map(t => `
-                                                <option value="${t.id_tipo_actividad}" ${actividad?.id_tipo_actividad === t.id_tipo_actividad ? 'selected' : ''}>
-                                                    ${t.nombre}
-                                                </option>
-                                            `).join('')}
-                                        </select>
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label>Tipo de Actividad *</label>
+                                            <select class="form-select" name="id_tipo_actividad" required>
+                                                <option value="">Seleccione...</option>
+                                                ${tiposActividad.map(t => `
+                                                    <option value="${t.id_tipo_actividad}" ${actividad?.id_tipo_actividad === t.id_tipo_actividad ? 'selected' : ''}>
+                                                        ${t.nombre}
+                                                    </option>
+                                                `).join('')}
+                                            </select>
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label>Prioridad</label>
+                                            <select class="form-select" name="id_prioridad">
+                                                ${prioridades.map(p => `
+                                                    <option value="${p.id_prioridad}" ${actividad?.id_prioridad === p.id_prioridad ? 'selected' : ''}>
+                                                        ${p.nombre}
+                                                    </option>
+                                                `).join('')}
+                                            </select>
+                                        </div>
                                     </div>
                                     
-                                    <div class="col-md-6 mb-3">
-                                        <label>Prioridad</label>
-                                        <select class="form-select" name="id_prioridad">
-                                            ${prioridades.map(p => `
-                                                <option value="${p.id_prioridad}" ${actividad?.id_prioridad === p.id_prioridad ? 'selected' : ''}>
-                                                    ${p.nombre}
-                                                </option>
-                                            `).join('')}
-                                        </select>
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label>Oportunidad (opcional)</label>
+                                            <select class="form-select" name="id_oportunidad">
+                                                <option value="">Sin oportunidad vinculada</option>
+                                                ${oportunidadesLista.map(opp => `
+                                                    <option value="${opp.id_oportunidad}" 
+                                                        ${(actividad?.id_oportunidad === opp.id_oportunidad || 
+                                                        oportunidadPreSeleccionada == opp.id_oportunidad) ? 'selected' : ''}>
+                                                        ${opp.numero_oportunidad} - ${opp.nombre_oportunidad} (${opp.cliente})
+                                                    </option>
+                                                `).join('')}
+                                            </select>
+                                            <small class="text-muted">Puedes vincular esta actividad a una oportunidad existente</small>
+                                        </div>
                                     </div>
-                                </div>
-                                
-                                <div class="mb-3">
-                                    <label>Asunto *</label>
-                                    <input type="text" class="form-control" name="asunto" 
-                                           value="${actividad?.asunto || ''}" required>
-                                </div>
-                                
-                                <div class="row">
-                                    <div class="col-md-4 mb-3">
-                                        <label>Fecha *</label>
-                                        <input type="date" class="form-control" name="fecha" 
-                                               value="${actividad?.fecha || today}" required>
+                                    
+                                    <div class="mb-3">
+                                        <label>Asunto *</label>
+                                        <input type="text" class="form-control" name="asunto" 
+                                            value="${actividad?.asunto || ''}" required>
                                     </div>
-                                    <div class="col-md-4 mb-3">
-                                        <label>Hora Inicio *</label>
-                                        <input type="time" class="form-control" name="hora_inicio" 
-                                               value="${actividad?.hora_inicio?.substring(0,5) || '09:00'}" required>
+                                    
+                                    <div class="row">
+                                        <div class="col-md-4 mb-3">
+                                            <label>Fecha *</label>
+                                            <input type="date" class="form-control" name="fecha" 
+                                                value="${actividad?.fecha || today}" required>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label>Hora Inicio *</label>
+                                            <input type="time" class="form-control" name="hora_inicio" 
+                                                value="${actividad?.hora_inicio?.substring(0,5) || '09:00'}" required>
+                                        </div>
+                                        <div class="col-md-4 mb-3">
+                                            <label>Hora Fin</label>
+                                            <input type="time" class="form-control" name="hora_fin" 
+                                                value="${actividad?.hora_fin?.substring(0,5) || ''}">
+                                        </div>
                                     </div>
-                                    <div class="col-md-4 mb-3">
-                                        <label>Hora Fin</label>
-                                        <input type="time" class="form-control" name="hora_fin" 
-                                               value="${actividad?.hora_fin?.substring(0,5) || ''}">
+                                    
+                                    <div class="mb-3">
+                                        <label>Comentario</label>
+                                        <textarea class="form-control" name="comentario" rows="2">${actividad?.comentario || ''}</textarea>
                                     </div>
-                                </div>
-                                
-                                <div class="mb-3">
-                                    <label>Comentario</label>
-                                    <textarea class="form-control" name="comentario" rows="2">${actividad?.comentario || ''}</textarea>
-                                </div>
-                                
-                                <input type="hidden" name="id_estado_actividad" value="${actividad?.id_estado_actividad || 1}">
-                            </form>
-                        </div>
-                        <div class="modal-footer">
-                            <button class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                            <button class="btn btn-primary" onclick="guardarActividad()">Guardar</button>
+                                    
+                                    <input type="hidden" name="id_estado_actividad" value="${actividad?.id_estado_actividad || 1}">
+                                </form>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                                <button class="btn btn-primary" onclick="guardarActividad()">Guardar</button>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        `;
-        
-        const modalExistente = document.getElementById('modalActividad');
-        if (modalExistente) modalExistente.remove();
-        
-        document.body.insertAdjacentHTML('beforeend', modalHTML);
-        
-        const modal = new bootstrap.Modal(document.getElementById('modalActividad'));
-        modal.show();
-    });
-}
-
+            `;
+            
+            const modalExistente = document.getElementById('modalActividad');
+            if (modalExistente) modalExistente.remove();
+            
+            document.body.insertAdjacentHTML('beforeend', modalHTML);
+            
+            const modal = new bootstrap.Modal(document.getElementById('modalActividad'));
+            modal.show();
+        });
+    }
+    
     async function guardarActividad() {
         const form = document.getElementById('formActividad');
         const formData = new FormData(form);
@@ -1156,6 +1197,13 @@ let prioridades = [];
             mostrarMensaje('Complete los campos requeridos', 'danger');
             return;
         }
+        
+        // Convertir id_oportunidad a NULL si viene vacío
+        if (!data.id_oportunidad || data.id_oportunidad === '') {
+            delete data.id_oportunidad;  // No enviar el campo (el servidor usará NULL)
+        }
+        
+        console.log('Datos a enviar:', data);
         
         try {
             let response;
@@ -1228,6 +1276,148 @@ let prioridades = [];
         }
     }
 
+    // ========== VISTA DETALLE DE OPORTUNIDAD ==========
+    async function verDetalleOportunidad(idOportunidad) {
+        try {
+            // Cargar datos de la oportunidad y sus actividades
+            const [oppRes, actividadesRes] = await Promise.all([
+                fetch(`${API_URL}/oportunidades/${idOportunidad}`),
+                fetch(`${API_URL}/oportunidades/${idOportunidad}/actividades`)
+            ]);
+            
+            const oportunidad = await oppRes.json();
+            const actividades = await actividadesRes.json();
+            
+            const contenido = `
+                <div class="card-modern card p-4">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h4><i class="bi bi-briefcase"></i> Detalle de Oportunidad</h4>
+                        <button class="btn btn-secondary btn-sm" onclick="cambiarVista('oportunidades')">
+                            <i class="bi bi-arrow-left"></i> Volver
+                        </button>
+                    </div>
+                    
+                    <!-- Información de la oportunidad -->
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <div class="border rounded p-3">
+                                <h6>Información General</h6>
+                                <hr>
+                                <p><strong>N° Oportunidad:</strong> ${oportunidad.numero_oportunidad || 'N/A'}</p>
+                                <p><strong>Nombre:</strong> ${oportunidad.nombre_oportunidad || 'N/A'}</p>
+                                <p><strong>Cliente:</strong> ${oportunidad.cliente || 'N/A'}</p>
+                                <p><strong>Vendedor:</strong> ${oportunidad.vendedor || 'N/A'}</p>
+                                <p><strong>Monto Potencial:</strong> $${(parseFloat(oportunidad.monto_potencial) || 0).toLocaleString()}</p>
+                                <p><strong>Avance:</strong> ${oportunidad.porcentaje_avance || 0}%</p>
+                                <p><strong>Fecha Inicio:</strong> ${new Date(oportunidad.fecha_inicio).toLocaleDateString() || 'N/A'}</p>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="border rounded p-3">
+                                <h6>Estadísticas</h6>
+                                <hr>
+                                <p><strong>Actividades:</strong> ${actividades.length}</p>
+                                <p><strong>Concluidas:</strong> ${actividades.filter(a => a.estado === 'Concluido').length}</p>
+                                <p><strong>Pendientes:</strong> ${actividades.filter(a => a.estado !== 'Concluido').length}</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Actividades vinculadas -->
+                    <div class="mt-3">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5><i class="bi bi-calendar-check"></i> Actividades Vinculadas</h5>
+                            <button class="btn btn-sm btn-primary" onclick="nuevaActividadDesdeOportunidad(${idOportunidad})">
+                                <i class="bi bi-plus-circle"></i> Nueva Actividad
+                            </button>
+                        </div>
+                        
+                        ${actividades.length === 0 ? 
+                            '<div class="alert alert-info">No hay actividades vinculadas a esta oportunidad</div>' : 
+                            `
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Asunto</th>
+                                            <th>Tipo</th>
+                                            <th>Fecha</th>
+                                            <th>Hora</th>
+                                            <th>Prioridad</th>
+                                            <th>Estado</th>
+                                            <th>Responsable</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${actividades.map(act => `
+                                            <tr>
+                                                <td><small>${act.numero_actividad || act.id_actividad}</small></td>
+                                                <td><strong>${act.asunto}</strong></td>
+                                                <td><span class="badge bg-secondary">${act.tipo_actividad}</span></td>
+                                                <td>${new Date(act.fecha).toLocaleDateString()}</td>
+                                                <td><small>${act.hora_inicio?.substring(0,5) || '-'}</small></td>
+                                                <td>
+                                                    ${act.prioridad === 'Alto' ? '<span class="badge bg-danger">Alta</span>' : 
+                                                    act.prioridad === 'Normal' ? '<span class="badge bg-warning">Normal</span>' : 
+                                                    '<span class="badge bg-secondary">Baja</span>'}
+                                                </td>
+                                                <td>
+                                                    <select class="form-select form-select-sm" style="width: 130px;" 
+                                                        onchange="cambiarEstadoActividad(${act.id_actividad}, this.value)">
+                                                    <option value="1" ${act.estado === 'En Proceso' ? 'selected' : ''}>En Proceso</option>
+                                                    <option value="2" ${act.estado === 'En Espera' ? 'selected' : ''}>En Espera</option>
+                                                    <option value="3" ${act.estado === 'Concluido' ? 'selected' : ''}>Concluido</option>
+                                                    <option value="4" ${act.estado === 'No Iniciado' ? 'selected' : ''}>No Iniciado</option>
+                                                    <option value="5" ${act.estado === 'Inactivo' ? 'selected' : ''}>Inactivo</option>
+                                                    <option value="6" ${act.estado === 'Cerrado' ? 'selected' : ''}>Cerrado</option>
+                                                </select>
+                                                </td>
+                                                <td>${act.responsable || '-'}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                            `
+                        }
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('contenidoDinamico').innerHTML = contenido;
+            
+        } catch (error) {
+            console.error('Error cargando detalle:', error);
+            mostrarMensaje('Error al cargar el detalle de la oportunidad', 'danger');
+        }
+    }
+
+    function nuevaActividadDesdeOportunidad(idOportunidad) {
+        // Guardar el ID de oportunidad para pre-seleccionarlo en el formulario
+        localStorage.setItem('oportunidadParaActividad', idOportunidad);
+        mostrarFormActividad();
+    }
+
+    async function cambiarEstadoActividadDesdeOportunidad(idActividad, nuevoEstadoId, idOportunidad) {
+        try {
+            const response = await fetch(`${API_URL}/actividades/${idActividad}/estado`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id_estado_actividad: parseInt(nuevoEstadoId) })
+            });
+            
+            if (response.ok) {
+                mostrarMensaje('Estado actualizado');
+                await verDetalleOportunidad(idOportunidad); // Recargar el detalle
+            } else {
+                mostrarMensaje('Error al actualizar estado', 'danger');
+            }
+        } catch (error) {
+            mostrarMensaje('Error de conexión', 'danger');
+        }
+    }
+    
     async function init() {
         const conectado = await verificarConexion();
         if (conectado) {
