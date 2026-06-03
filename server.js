@@ -437,10 +437,58 @@ app.get('/api/oportunidades/:id/actividades', async (req, res) => {
 // POST - Crear actividad usando SP
 app.post('/api/actividades', async (req, res) => {
     try {
-        const { id_cliente, id_empleado_responsable, id_tipo_actividad, asunto, fecha, hora_inicio, hora_fin, id_prioridad, comentario, id_estado_actividad, id_oportunidad, calle, ciudad, sala } = req.body;
+        const {
+            id_cliente,
+            id_empleado_responsable,
+            id_tipo_actividad,
+            asunto,
+            fecha,
+            hora_inicio,
+            hora_fin,
+            id_prioridad,
+            comentario,
+            id_estado_actividad,
+            id_oportunidad,
+            calle,
+            ciudad,
+            sala
+        } = req.body;
 
-        if (!id_cliente || !id_empleado_responsable || !asunto || !fecha || !hora_inicio) {
+        if (!id_cliente || !id_empleado_responsable || !asunto || !fecha) {
             return res.status(400).json({ error: 'Faltan campos requeridos' });
+        }
+
+        function normalizarHora(valor) {
+            if (!valor || String(valor).trim() === '') {
+                return null;
+            }
+
+            let hora = String(valor).trim();
+
+            if (hora.includes('T')) {
+                hora = hora.split('T')[1];
+            }
+
+            if (hora.includes('.')) {
+                hora = hora.split('.')[0];
+            }
+
+            if (hora.length === 5) {
+                hora += ':00';
+            }
+
+            if (!/^\d{2}:\d{2}:\d{2}$/.test(hora)) {
+                return null;
+            }
+
+            return hora;
+        }
+
+        let horaInicio = normalizarHora(hora_inicio);
+        let horaFin = normalizarHora(hora_fin);
+
+        if (!horaInicio) {
+            horaInicio = new Date().toTimeString().slice(0, 8);
         }
 
         const result = await ejecutarSP('sp_CrearActividad', {
@@ -449,8 +497,8 @@ app.post('/api/actividades', async (req, res) => {
             id_tipo_actividad: { type: sql.Int, value: Number(id_tipo_actividad || 1) },
             asunto: { type: sql.VarChar(200), value: asunto },
             fecha: { type: sql.Date, value: fecha },
-            hora_inicio: { type: sql.Time, value: hora_inicio },
-            hora_fin: { type: sql.Time, value: hora_fin || null },
+            hora_inicio: { type: sql.VarChar(8), value: horaInicio },
+            hora_fin: { type: sql.VarChar(8), value: horaFin },
             id_prioridad: { type: sql.Int, value: Number(id_prioridad || 2) },
             comentario: { type: sql.VarChar(sql.MAX), value: comentario || null },
             id_estado_actividad: { type: sql.Int, value: Number(id_estado_actividad || 1) },
@@ -460,7 +508,12 @@ app.post('/api/actividades', async (req, res) => {
             sala: { type: sql.VarChar(50), value: sala || null }
         });
 
-        res.json({ success: true, ...(result.recordset[0] || {}), message: 'Actividad creada correctamente' });
+        res.json({
+            success: true,
+            ...(result.recordset?.[0] || {}),
+            message: 'Actividad creada correctamente'
+        });
+
     } catch (err) {
         console.error('Error POST /actividades:', err.message);
         res.status(500).json({ error: err.message });
