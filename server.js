@@ -8,25 +8,56 @@ app.use(express.json());
 app.use(express.static('public'));
 
 // ========== CONFIGURACIÓN ==========
-const config = {
-    user: 'sa',
-    password: '123456789',
-    server: 'localhost\\SQLEXPRESS',
-    database: 'CRMVentas',
-    options: {
-        encrypt: false,
-        trustServerCertificate: true,
-        enableArithAbort: true
+const configs = [
+    {
+        user: process.env.DB_USER || 'sa',
+        password: process.env.DB_PASSWORD || 'Panchito1310!',
+        server: process.env.DB_SERVER_PRIMARY || 'localhost\\SQL1',
+        database: process.env.DB_NAME || 'CRMVentas',
+        options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true }
+    },
+    {
+        user: process.env.DB_USER || 'sa',
+        password: process.env.DB_PASSWORD || 'Panchito1310!',
+        server: process.env.DB_SERVER_SECONDARY || 'localhost\\SQL2',
+        database: process.env.DB_NAME || 'CRMVentas',
+        options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true }
     }
-};
+];
 
-// Conectar al iniciar
-sql.connect(config).then(() => {
-    console.log('Conectado a SQL Server');
-    console.log('Base de datos: CRMVentas');
-}).catch(err => {
-    console.error('Error de conexión:', err.message);
-});
+async function conectarBD() {
+    for (const cfg of configs) {
+        try {
+            await sql.connect(cfg);
+            console.log('Conectado a SQL Server:', cfg.server);
+            console.log('Base de datos:', cfg.database);
+            return;
+        } catch (err) {
+            console.log('No conectó a', cfg.server, '-', err.message);
+        }
+    }
+    console.error('No se pudo conectar a ninguna instancia configurada.');
+}
+
+conectarBD();
+
+function boolToBit(value, defaultValue = true) {
+    if (value === undefined || value === null) return defaultValue ? 1 : 0;
+    return value ? 1 : 0;
+}
+
+function fechaOrNull(value) {
+    return value ? value : null;
+}
+
+// ========== HELPERS PARA PROCEDIMIENTOS ALMACENADOS ==========
+async function ejecutarSP(nombre, params = {}) {
+    const request = new sql.Request();
+    for (const [key, cfg] of Object.entries(params)) {
+        request.input(key, cfg.type, cfg.value);
+    }
+    return await request.execute(nombre);
+}
 
 // ========== HEALTH CHECK ==========
 app.get('/api/health', async (req, res) => {
@@ -44,26 +75,12 @@ app.get('/api/health', async (req, res) => {
 
 // ========== API: CLIENTES ==========
 
-// GET - Listar clientes
+// GET - Listar clientes usando SP
 app.get('/api/clientes', async (req, res) => {
     try {
-        const result = await sql.query(`
-            SELECT 
-                C.id_cliente,
-                C.nombre_comercial,
-                C.razon_social,
-                C.direccion,
-                C.telefono,
-                C.celular,
-                C.email,
-                C.contacto_nombre,
-                C.id_tipo_cliente,
-                T.nombre as tipo_cliente_nombre
-            FROM Cliente C
-            INNER JOIN TipoCliente T ON C.id_tipo_cliente = T.id_tipo_cliente
-            WHERE C.activo = 1
-            ORDER BY C.id_cliente DESC
-        `);
+        const result = await ejecutarSP('sp_ObtenerClientes', {
+            activo: { type: sql.Bit, value: 1 }
+        });
         res.json(result.recordset);
     } catch (err) {
         console.error('Error GET /clientes:', err.message);
@@ -71,151 +88,40 @@ app.get('/api/clientes', async (req, res) => {
     }
 });
 
-// POST - Crear cliente (adaptado a tu esquema)
+// POST - Crear cliente usando SP
 app.post('/api/clientes', async (req, res) => {
     try {
-        const { 
-            nombre_comercial, 
-            razon_social,
-            contacto_nombre, 
-            telefono,
-            celular,
-            email,
-            direccion,
-            id_tipo_cliente 
-        } = req.body;
-        
-        if (!nombre_comercial) {
-            return res.status(400).json({ error: 'El nombre comercial es requerido' });
-        }
-        
-        // Si no viene id_tipo_cliente, usar 1 (Potencial por defecto)
-        const tipoCliente = id_tipo_cliente || 1;
-        
-        await sql.query(`
-            INSERT INTO Cliente (
-                nombre_comercial, 
-                razon_social,
-                contacto_nombre, 
-                telefono,
-                celular,
-                email,
-                direccion,
-                id_tipo_cliente,
-                activo
-            ) VALUES (
-                N'${nombre_comercial.replace(/'/g, "''")}',
-                N'${(razon_social || '').replace(/'/g, "''")}',
-                N'${(contacto_nombre || '').replace(/'/g, "''")}',
-                '${(telefono || '').replace(/'/g, "''")}',
-                '${(celular || '').replace(/'/g, "''")}',
-                '${(email || '').replace(/'/g, "''")}',
-                N'${(direccion || '').replace(/'/g, "''")}',
-                ${tipoCliente},
-                1
-            )
-        `);
-        
-        console.log(`Cliente creado: ${nombre_comercial}`);
-        res.json({ success: true, message: 'Cliente creado correctamente' });
-        
+        const { nombre_comercial, razon_social, contacto_nombre, telefono, celular, email, direccion, id_tipo_cliente } = req.body;
+        if (!nombre_comercial) return res.status(400).json({ error: 'El nombre comercial es requerido' });
+
+        const result = await ejecutarSP('sp_CrearCliente', {
+            nombre_comercial: { type: sql.VarChar(100), value: nombre_comercial },
+            razon_social: { type: sql.VarChar(100), value: razon_social || null },
+            direccion: { type: sql.VarChar(255), value: direccion || null },
+            telefono: { type: sql.VarChar(20), value: telefono || null },
+            celular: { type: sql.VarChar(20), value: celular || null },
+            email: { type: sql.VarChar(100), value: email || null },
+            contacto_nombre: { type: sql.VarChar(100), value: contacto_nombre || null },
+            id_tipo_cliente: { type: sql.Int, value: Number(id_tipo_cliente || 1) }
+        });
+
+        res.json({ success: true, ...(result.recordset[0] || {}), message: 'Cliente creado correctamente' });
     } catch (err) {
         console.error('Error POST /clientes:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// ========== API: EMPLEADOS ==========
-
-// POST - Crear empleado
-app.post('/api/empleados', async (req, res) => {
-    try {
-        console.log('Body recibido:', req.body);
-        
-        const { nombre_completo, email, telefono, id_rol, fecha_contratacion } = req.body;
-        
-        // Validación
-        if (!nombre_completo || !email) {
-            console.log('Faltan campos requeridos');
-            return res.status(400).json({ error: 'Nombre y email son requeridos' });
-        }
-        
-        // Verificar email único
-        const existCheck = await sql.query(`
-            SELECT COUNT(*) as count FROM Empleado WHERE email = '${email.replace(/'/g, "''")}'
-        `);
-        
-        if (existCheck.recordset[0].count > 0) {
-            console.log('Email ya existe');
-            return res.status(400).json({ error: 'Ya existe un empleado con ese email' });
-        }
-        
-        const fecha = fecha_contratacion || new Date().toISOString().split('T')[0];
-        
-        // Insertar empleado
-        const result = await sql.query(`
-            INSERT INTO Empleado (nombre_completo, email, telefono, id_rol, fecha_contratacion, activo)
-            VALUES (
-                N'${nombre_completo.replace(/'/g, "''")}',
-                '${email.replace(/'/g, "''")}',
-                '${(telefono || '').replace(/'/g, "''")}',
-                ${id_rol || 1},
-                '${fecha}',
-                1
-            );
-            
-            -- Obtener el ID insertado
-            SELECT SCOPE_IDENTITY() AS id;
-        `);
-        
-        // Obtener el ID del empleado insertado
-        const nuevoId = result.recordset[0]?.id || result.recordset[0]?.id_empleado;
-        
-        console.log(`Empleado creado: ${nombre_completo} (ID: ${nuevoId})`);
-        
-        res.status(200).json({ 
-            success: true, 
-            message: 'Empleado creado correctamente',
-            id: nuevoId
-        });
-        
-    } catch (err) {
-        console.error('Error POST /empleados:', err.message);
-        console.error('Detalle completo:', err);
-        
-        // Verificar si es error de duplicado
-        if (err.message.includes('duplicate') || err.message.includes('UNIQUE')) {
-            return res.status(400).json({ error: 'Ya existe un empleado con ese email' });
-        }
-        
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // ========== API: OPORTUNIDADES ==========
 
-// GET - Listar oportunidades
+// GET - Listar oportunidades usando SP
 app.get('/api/oportunidades', async (req, res) => {
     try {
-        const result = await sql.query(`
-            SELECT 
-                O.id_oportunidad,
-                O.numero_oportunidad,
-                O.nombre_oportunidad,
-                C.nombre_comercial AS cliente,
-                E.nombre_completo AS vendedor,
-                O.monto_potencial,
-                O.porcentaje_avance,
-                O.fecha_inicio,
-                O.fecha_cierre_prevista,
-                T.nombre as tipo_oportunidad
-            FROM Oportunidad O
-            LEFT JOIN Cliente C ON O.id_cliente = C.id_cliente
-            LEFT JOIN Empleado E ON O.id_empleado_vendedor = E.id_empleado
-            LEFT JOIN TipoOportunidad T ON O.id_tipo_oportunidad = T.id_tipo_oportunidad
-            WHERE O.activo = 1
-            ORDER BY O.id_oportunidad DESC
-        `);
+        const result = await ejecutarSP('sp_ObtenerOportunidades', {
+            activo: { type: sql.Bit, value: 1 },
+            id_empleado: { type: sql.Int, value: null },
+            id_estado: { type: sql.Int, value: null }
+        });
         res.json(result.recordset);
     } catch (err) {
         console.error('Error GET /oportunidades:', err.message);
@@ -223,93 +129,34 @@ app.get('/api/oportunidades', async (req, res) => {
     }
 });
 
-    // POST - Crear oportunidad
-    app.post('/api/oportunidades', async (req, res) => {
-        try {
-            const { 
-                nombre_oportunidad, 
-                id_cliente, 
-                id_empleado_vendedor,
-                id_tipo_oportunidad,
-                monto_potencial,
-                cierre_planificado_valor,
-                id_unidad_cierre
-            } = req.body;
-            
-            // Generar número de oportunidad
-            const numResult = await sql.query(`
-                SELECT ISNULL(MAX(CAST(REPLACE(numero_oportunidad, 'OP-', '') AS INT)), 0) + 1 AS nextNum 
-                FROM Oportunidad
-            `);
-            const numero_oportunidad = `OP-${numResult.recordset[0].nextNum}`;
-            
-            const dias = cierre_planificado_valor || 30;
-            
-            // Insertar oportunidad
-            const insertResult = await sql.query(`
-                INSERT INTO Oportunidad (
-                    numero_oportunidad,
-                    nombre_oportunidad,
-                    id_cliente,
-                    id_empleado_vendedor,
-                    id_empleado_gerente,
-                    id_tipo_oportunidad,
-                    id_estado_oportunidad,
-                    cierre_planificado_valor,
-                    id_unidad_cierre,
-                    fecha_cierre_prevista,
-                    monto_potencial,
-                    porcentaje_avance,
-                    activo
-                ) VALUES (
-                    '${numero_oportunidad}',
-                    N'${nombre_oportunidad.replace(/'/g, "''")}',
-                    ${id_cliente},
-                    ${id_empleado_vendedor},
-                    1,
-                    ${id_tipo_oportunidad || 1},
-                    1,
-                    ${dias},
-                    ${id_unidad_cierre || 1},
-                    DATEADD(DAY, ${dias}, GETDATE()),
-                    ${monto_potencial || 0},
-                    0,
-                    1
-                );
-                SELECT SCOPE_IDENTITY() AS id;
-            `);
-            
-            const nuevaId = insertResult.recordset[0].id;
-            
-            // Agregar etapa inicial (Calificación - 30%)
-            await sql.query(`
-                INSERT INTO Etapa_Oportunidad (
-                    id_oportunidad,
-                    id_tipo_etapa,
-                    id_empleado_ventas,
-                    fecha_inicio_etapa,
-                    monto_potencial_etapa,
-                    importe_ponderado_etapa,
-                    comentario
-                ) VALUES (
-                    ${nuevaId},
-                    1,  -- Calificación de la oportunidad
-                    ${id_empleado_vendedor},
-                    GETDATE(),
-                    ${monto_potencial || 0},
-                    ${(monto_potencial || 0) * 0.30},
-                    'Oportunidad creada'
-                )
-            `);
-            
-            console.log(`Oportunidad creada: ${numero_oportunidad}`);
-            res.json({ success: true, numero_oportunidad, id: nuevaId });
-            
-        } catch (err) {
-            console.error('Error POST /oportunidades:', err.message);
-            res.status(500).json({ error: err.message });
+// POST - Crear oportunidad usando SP
+app.post('/api/oportunidades', async (req, res) => {
+    try {
+        const { nombre_oportunidad, id_cliente, id_empleado_vendedor, id_empleado_gerente, id_tipo_oportunidad, monto_potencial, cierre_planificado_valor, id_unidad_cierre } = req.body;
+
+        if (!nombre_oportunidad || !id_cliente || !id_empleado_vendedor) {
+            return res.status(400).json({ error: 'Nombre, cliente y vendedor son requeridos' });
         }
-    });
+
+        const gerente = Number(id_empleado_gerente || 1);
+        const result = await ejecutarSP('sp_CrearOportunidad', {
+            nombre_oportunidad: { type: sql.VarChar(150), value: nombre_oportunidad },
+            id_cliente: { type: sql.Int, value: Number(id_cliente) },
+            id_empleado_vendedor: { type: sql.Int, value: Number(id_empleado_vendedor) },
+            id_empleado_gerente: { type: sql.Int, value: gerente },
+            id_tipo_oportunidad: { type: sql.Int, value: Number(id_tipo_oportunidad || 1) },
+            cierre_planificado_valor: { type: sql.Int, value: Number(cierre_planificado_valor || 30) },
+            id_unidad_cierre: { type: sql.Int, value: Number(id_unidad_cierre || 1) },
+            monto_potencial: { type: sql.Decimal(18, 2), value: Number(monto_potencial || 0) }
+        });
+
+        const data = result.recordset[0] || {};
+        res.json({ success: true, ...data, numero_oportunidad: data.numero_oportunidad, id: data.id_oportunidad });
+    } catch (err) {
+        console.error('Error POST /oportunidades:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // ========== API: CATÁLOGOS ==========
 
@@ -341,23 +188,12 @@ app.get('/api/unidades-cierre', async (req, res) => {
 });
 
 // ========== API: EMPLEADOS ==========
-// GET - Listar todos los empleados
+// GET - Listar todos los empleados usando SP
 app.get('/api/empleados', async (req, res) => {
     try {
-        const result = await sql.query(`
-            SELECT 
-                E.id_empleado,
-                E.nombre_completo,
-                E.email,
-                E.telefono,
-                E.id_rol,
-                R.nombre as rol_nombre,
-                E.fecha_contratacion,
-                E.activo
-            FROM Empleado E
-            INNER JOIN RolEmpleado R ON E.id_rol = R.id_rol
-            ORDER BY E.id_empleado DESC
-        `);
+        const result = await ejecutarSP('sp_ObtenerEmpleados', {
+            activo: { type: sql.Bit, value: 1 }
+        });
         res.json(result.recordset);
     } catch (err) {
         console.error('Error GET /empleados:', err.message);
@@ -365,107 +201,77 @@ app.get('/api/empleados', async (req, res) => {
     }
 });
 
-// GET - Empleados activos (para selects)
+// GET - Empleados activos para selects usando SP
 app.get('/api/empleados/activos', async (req, res) => {
     try {
-        const result = await sql.query(`
-            SELECT id_empleado, nombre_completo, email
-            FROM Empleado
-            WHERE activo = 1
-            ORDER BY nombre_completo
-        `);
-        res.json(result.recordset);
+        const result = await ejecutarSP('sp_ObtenerEmpleados', {
+            activo: { type: sql.Bit, value: 1 }
+        });
+        res.json(result.recordset.map(e => ({ id_empleado: e.id_empleado, nombre_completo: e.nombre_completo, email: e.email })));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// GET - Empleado por ID
+// GET - Empleado por ID usando SP
 app.get('/api/empleados/:id', async (req, res) => {
     try {
-        const result = await sql.query(`
-            SELECT 
-                id_empleado, nombre_completo, email, telefono, id_rol, fecha_contratacion, activo
-            FROM Empleado
-            WHERE id_empleado = ${req.params.id}
-        `);
+        const result = await ejecutarSP('sp_ObtenerEmpleadoPorId', {
+            id_empleado: { type: sql.Int, value: Number(req.params.id) }
+        });
         res.json(result.recordset[0] || null);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// POST - Crear empleado
+// POST - Crear empleado usando SP
 app.post('/api/empleados', async (req, res) => {
     try {
         const { nombre_completo, email, telefono, id_rol, fecha_contratacion } = req.body;
-        
-        if (!nombre_completo || !email) {
-            return res.status(400).json({ error: 'Nombre y email son requeridos' });
-        }
-        
-        // Verificar email único
-        const existCheck = await sql.query(`
-            SELECT COUNT(*) as count FROM Empleado WHERE email = '${email.replace(/'/g, "''")}'
-        `);
-        
-        if (existCheck.recordset[0].count > 0) {
-            return res.status(400).json({ error: 'Ya existe un empleado con ese email' });
-        }
-        
-        const fecha = fecha_contratacion || new Date().toISOString().split('T')[0];
-        
-        await sql.query(`
-            INSERT INTO Empleado (nombre_completo, email, telefono, id_rol, fecha_contratacion, activo)
-            VALUES (
-                N'${nombre_completo.replace(/'/g, "''")}',
-                '${email.replace(/'/g, "''")}',
-                '${(telefono || '').replace(/'/g, "''")}',
-                ${id_rol || 1},
-                '${fecha}',
-                1
-            )
-        `);
-        
-        console.log(`Empleado creado: ${nombre_completo}`);
-        res.json({ success: true, message: 'Empleado creado correctamente' });
-        
+        if (!nombre_completo || !email) return res.status(400).json({ error: 'Nombre y email son requeridos' });
+
+        const result = await ejecutarSP('sp_CrearEmpleado', {
+            nombre_completo: { type: sql.VarChar(100), value: nombre_completo },
+            email: { type: sql.VarChar(100), value: email },
+            telefono: { type: sql.VarChar(20), value: telefono || null },
+            id_rol: { type: sql.Int, value: Number(id_rol || 1) },
+            fecha_contratacion: { type: sql.Date, value: fechaOrNull(fecha_contratacion) }
+        });
+
+        res.json({ success: true, ...(result.recordset[0] || {}), message: 'Empleado creado correctamente' });
     } catch (err) {
         console.error('Error POST /empleados:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// PUT - Actualizar empleado
+// PUT - Actualizar empleado usando SP
 app.put('/api/empleados/:id', async (req, res) => {
     try {
         const { nombre_completo, email, telefono, id_rol, activo } = req.body;
-        const id = req.params.id;
-        
-        await sql.query(`
-            UPDATE Empleado SET
-                nombre_completo = N'${nombre_completo.replace(/'/g, "''")}',
-                email = '${email.replace(/'/g, "''")}',
-                telefono = '${(telefono || '').replace(/'/g, "''")}',
-                id_rol = ${id_rol},
-                activo = ${activo ? 1 : 0}
-            WHERE id_empleado = ${id}
-        `);
-        
-        console.log(`Empleado actualizado: ID ${id}`);
-        res.json({ success: true, message: 'Empleado actualizado' });
-        
+        const result = await ejecutarSP('sp_ActualizarEmpleado', {
+            id_empleado: { type: sql.Int, value: Number(req.params.id) },
+            nombre_completo: { type: sql.VarChar(100), value: nombre_completo },
+            email: { type: sql.VarChar(100), value: email },
+            telefono: { type: sql.VarChar(20), value: telefono || null },
+            id_rol: { type: sql.Int, value: Number(id_rol || 1) },
+            activo: { type: sql.Bit, value: boolToBit(activo, true) }
+        });
+        res.json({ success: true, ...(result.recordset[0] || {}), message: 'Empleado actualizado' });
     } catch (err) {
         console.error('Error PUT /empleados:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// DELETE - Eliminar empleado (desactivar)
+// DELETE - Eliminar empleado usando SP
 app.delete('/api/empleados/:id', async (req, res) => {
     try {
-        await sql.query(`UPDATE Empleado SET activo = 0 WHERE id_empleado = ${req.params.id}`);
-        res.json({ success: true, message: 'Empleado desactivado' });
+        const result = await ejecutarSP('sp_EliminarEmpleado', {
+            id_empleado: { type: sql.Int, value: Number(req.params.id) }
+        });
+        res.json({ success: true, ...(result.recordset[0] || {}), message: 'Empleado desactivado' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -487,9 +293,14 @@ app.get('/api/roles', async (req, res) => {
 app.get('/api/etapas', async (req, res) => {
     try {
         const result = await sql.query(`
-            SELECT id_tipo_etapa, nombre_etapa, porcentaje, orden
+            SELECT 
+                id_tipo_etapa,
+                nombre_etapa,
+                porcentaje,
+                orden,
+                descripcion
             FROM TipoEtapa
-            ORDER BY orden
+            ORDER BY orden;
         `);
         res.json(result.recordset);
     } catch (err) {
@@ -532,79 +343,29 @@ app.get('/api/oportunidades/kanban', async (req, res) => {
         
     } catch (err) {
         console.error('Error kanban:', err.message);
-        // En caso de error, devolver array vacío
         res.json([]);
     }
 });
-// POST - Cambiar etapa de una oportunidad
+// POST - Cambiar etapa de una oportunidad usando SP
 app.post('/api/oportunidades/:id/cambiar-etapa', async (req, res) => {
     try {
         const { id } = req.params;
         const { id_tipo_etapa, comentario } = req.body;
-        
-        // Obtener información de la etapa
-        const etapaResult = await sql.query(`
-            SELECT porcentaje, nombre_etapa FROM TipoEtapa WHERE id_tipo_etapa = ${id_tipo_etapa}
-        `);
-        
-        if (etapaResult.recordset.length === 0) {
-            return res.status(400).json({ error: 'Etapa no válida' });
-        }
-        
-        const porcentaje = etapaResult.recordset[0].porcentaje;
-        const etapaNombre = etapaResult.recordset[0].nombre_etapa;
-        
-        // Obtener monto potencial actual de la oportunidad
-        const oppResult = await sql.query(`
-            SELECT monto_potencial, id_empleado_vendedor FROM Oportunidad WHERE id_oportunidad = ${id}
-        `);
-        
-        if (oppResult.recordset.length === 0) {
-            return res.status(404).json({ error: 'Oportunidad no encontrada' });
-        }
-        
-        const montoPotencial = oppResult.recordset[0].monto_potencial;
-        const idVendedor = oppResult.recordset[0].id_empleado_vendedor;
-        const importePonderado = montoPotencial * (porcentaje / 100);
-        
-        // 1. Insertar en el historial de etapas
-        await sql.query(`
-            INSERT INTO Etapa_Oportunidad (
-                id_oportunidad, 
-                id_tipo_etapa, 
-                id_empleado_ventas,
-                fecha_inicio_etapa,
-                monto_potencial_etapa,
-                importe_ponderado_etapa,
-                comentario
-            ) VALUES (
-                ${id},
-                ${id_tipo_etapa},
-                ${idVendedor},
-                GETDATE(),
-                ${montoPotencial},
-                ${importePonderado},
-                '${(comentario || 'Cambio de etapa').replace(/'/g, "''")}'
-            )
-        `);
-        
-        // 2. Actualizar la oportunidad con el nuevo % y monto ponderado
-        await sql.query(`
-            UPDATE Oportunidad 
-            SET porcentaje_avance = ${porcentaje},
-                monto_ponderado = ${importePonderado}
-            WHERE id_oportunidad = ${id}
-        `);
-        
-        console.log(`Oportunidad ${id} movida a etapa: ${etapaNombre} (${porcentaje}%)`);
-        
-        res.json({ 
-            success: true, 
-            message: `Oportunidad movida a "${etapaNombre}"`,
-            nuevoPorcentaje: porcentaje,
-            nuevaEtapa: etapaNombre
+
+        // Procedimiento complementario tomado de crmVentasMar/baseDeDatos/02_procedimientos_almacenados.sql
+        const result = await ejecutarSP('sp_CambiarEtapaOportunidad', {
+            id_oportunidad: { type: sql.Int, value: Number(id) },
+            id_tipo_etapa: { type: sql.Int, value: Number(id_tipo_etapa) },
+            comentario: { type: sql.NVarChar(300), value: comentario || 'Cambio de etapa desde backend' }
         });
-        
+
+        const data = result.recordset[0] || {};
+        res.json({
+            success: true,
+            message: data.mensaje || 'Etapa actualizada correctamente',
+            nuevoPorcentaje: data.nuevo_porcentaje,
+            nuevaEtapa: data.id_tipo_etapa
+        });
     } catch (err) {
         console.error('Error POST /cambiar-etapa:', err.message);
         res.status(500).json({ error: err.message });
@@ -641,35 +402,15 @@ app.get('/api/pipeline/stats', async (req, res) => {
 
 // ========== API: ACTIVIDADES ==========
 
-// GET - Listar actividades
+// GET - Listar actividades usando SP
 app.get('/api/actividades', async (req, res) => {
     try {
-        const result = await sql.query(`
-            SELECT 
-                A.id_actividad,
-                A.numero_actividad,
-                A.asunto,
-                A.fecha,
-                A.hora_inicio,
-                A.hora_fin,
-                A.duracion_minutos,
-                C.nombre_comercial AS cliente,
-                E.nombre_completo AS responsable,
-                TA.nombre AS tipo_actividad,
-                P.nombre AS prioridad,
-                EA.nombre AS estado,
-                O.id_oportunidad,
-                O.numero_oportunidad,
-                O.nombre_oportunidad AS oportunidad_nombre
-            FROM Actividad A
-            INNER JOIN Cliente C ON A.id_cliente = C.id_cliente
-            INNER JOIN Empleado E ON A.id_empleado_responsable = E.id_empleado
-            INNER JOIN TipoActividad TA ON A.id_tipo_actividad = TA.id_tipo_actividad
-            INNER JOIN Prioridad P ON A.id_prioridad = P.id_prioridad
-            INNER JOIN EstadoActividad EA ON A.id_estado_actividad = EA.id_estado_actividad
-            LEFT JOIN Oportunidad O ON A.id_oportunidad = O.id_oportunidad
-            ORDER BY A.fecha DESC, A.hora_inicio DESC
-        `);
+        const result = await ejecutarSP('sp_ObtenerActividades', {
+            id_cliente: { type: sql.Int, value: null },
+            id_empleado: { type: sql.Int, value: null },
+            id_estado: { type: sql.Int, value: null },
+            id_oportunidad: { type: sql.Int, value: null }
+        });
         res.json(result.recordset);
     } catch (err) {
         console.error('Error GET /actividades:', err.message);
@@ -677,29 +418,15 @@ app.get('/api/actividades', async (req, res) => {
     }
 });
 
-// GET - Actividades por oportunidad
+// GET - Actividades por oportunidad usando SP
 app.get('/api/oportunidades/:id/actividades', async (req, res) => {
     try {
-        const result = await sql.query(`
-            SELECT 
-                A.id_actividad,
-                A.numero_actividad,
-                A.asunto,
-                A.fecha,
-                A.hora_inicio,
-                A.hora_fin,
-                TA.nombre AS tipo_actividad,
-                P.nombre AS prioridad,
-                EA.nombre AS estado,
-                E.nombre_completo AS responsable
-            FROM Actividad A
-            INNER JOIN TipoActividad TA ON A.id_tipo_actividad = TA.id_tipo_actividad
-            INNER JOIN Prioridad P ON A.id_prioridad = P.id_prioridad
-            INNER JOIN EstadoActividad EA ON A.id_estado_actividad = EA.id_estado_actividad
-            INNER JOIN Empleado E ON A.id_empleado_responsable = E.id_empleado
-            WHERE A.id_oportunidad = ${req.params.id}
-            ORDER BY A.fecha DESC, A.hora_inicio DESC
-        `);
+        const result = await ejecutarSP('sp_ObtenerActividades', {
+            id_cliente: { type: sql.Int, value: null },
+            id_empleado: { type: sql.Int, value: null },
+            id_estado: { type: sql.Int, value: null },
+            id_oportunidad: { type: sql.Int, value: Number(req.params.id) }
+        });
         res.json(result.recordset);
     } catch (err) {
         console.error('Error GET /oportunidades/:id/actividades:', err.message);
@@ -707,93 +434,48 @@ app.get('/api/oportunidades/:id/actividades', async (req, res) => {
     }
 });
 
-// POST - Crear actividad
+// POST - Crear actividad usando SP
 app.post('/api/actividades', async (req, res) => {
     try {
-        const { 
-            id_cliente, 
-            id_empleado_responsable,
-            id_tipo_actividad,
-            asunto,
-            fecha,
-            hora_inicio,
-            hora_fin,
-            id_prioridad,
-            comentario,
-            id_estado_actividad,
-            id_oportunidad
-        } = req.body;
-        
-        // Validar campos requeridos
+        const { id_cliente, id_empleado_responsable, id_tipo_actividad, asunto, fecha, hora_inicio, hora_fin, id_prioridad, comentario, id_estado_actividad, id_oportunidad, calle, ciudad, sala } = req.body;
+
         if (!id_cliente || !id_empleado_responsable || !asunto || !fecha || !hora_inicio) {
             return res.status(400).json({ error: 'Faltan campos requeridos' });
         }
-        
-        // Generar número de actividad
-        const numResult = await sql.query(`
-            SELECT ISNULL(MAX(CAST(REPLACE(numero_actividad, 'ACT-', '') AS INT)), 0) + 1 AS nextNum 
-            FROM Actividad
-        `);
-        const numero_actividad = `ACT-${numResult.recordset[0].nextNum}`;
-        
-        // Calcular duración si hay hora_fin
-        let duracion = null;
-        if (hora_inicio && hora_fin) {
-            duracion = `DATEDIFF(MINUTE, '${hora_inicio}', '${hora_fin}')`;
-        }
-        
-        await sql.query(`
-            INSERT INTO Actividad (
-                numero_actividad,
-                id_cliente,
-                id_empleado_responsable,
-                id_tipo_actividad,
-                asunto,
-                fecha,
-                hora_inicio,
-                hora_fin,
-                duracion_minutos,
-                id_prioridad,
-                comentario,
-                id_estado_actividad,
-                id_oportunidad
-            ) VALUES (
-                '${numero_actividad}',
-                ${id_cliente},
-                ${id_empleado_responsable},
-                ${id_tipo_actividad || 1},
-                N'${asunto.replace(/'/g, "''")}',
-                '${fecha}',
-                '${hora_inicio}',
-                ${hora_fin ? `'${hora_fin}'` : 'NULL'},
-                ${duracion || 'NULL'},
-                ${id_prioridad || 2},
-                N'${(comentario || '').replace(/'/g, "''")}',
-                ${id_estado_actividad || 1},
-                ${id_oportunidad || 'NULL'}
-            )
-        `);
-        
-        console.log(`Actividad creada: ${numero_actividad}`);
-        res.json({ success: true, message: 'Actividad creada correctamente', numero_actividad });
-        
+
+        const result = await ejecutarSP('sp_CrearActividad', {
+            id_cliente: { type: sql.Int, value: Number(id_cliente) },
+            id_empleado_responsable: { type: sql.Int, value: Number(id_empleado_responsable) },
+            id_tipo_actividad: { type: sql.Int, value: Number(id_tipo_actividad || 1) },
+            asunto: { type: sql.VarChar(200), value: asunto },
+            fecha: { type: sql.Date, value: fecha },
+            hora_inicio: { type: sql.Time, value: hora_inicio },
+            hora_fin: { type: sql.Time, value: hora_fin || null },
+            id_prioridad: { type: sql.Int, value: Number(id_prioridad || 2) },
+            comentario: { type: sql.VarChar(sql.MAX), value: comentario || null },
+            id_estado_actividad: { type: sql.Int, value: Number(id_estado_actividad || 1) },
+            id_oportunidad: { type: sql.Int, value: id_oportunidad ? Number(id_oportunidad) : null },
+            calle: { type: sql.VarChar(150), value: calle || null },
+            ciudad: { type: sql.VarChar(100), value: ciudad || null },
+            sala: { type: sql.VarChar(50), value: sala || null }
+        });
+
+        res.json({ success: true, ...(result.recordset[0] || {}), message: 'Actividad creada correctamente' });
     } catch (err) {
         console.error('Error POST /actividades:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// PUT - Actualizar estado de actividad
+// PUT - Actualizar estado de actividad usando SP
 app.put('/api/actividades/:id/estado', async (req, res) => {
     try {
         const { id_estado_actividad } = req.body;
-        
-        await sql.query(`
-            UPDATE Actividad SET id_estado_actividad = ${id_estado_actividad}
-            WHERE id_actividad = ${req.params.id}
-        `);
-        
-        res.json({ success: true, message: 'Estado actualizado' });
+        const result = await ejecutarSP('sp_ActualizarEstadoActividad', {
+            id_actividad: { type: sql.Int, value: Number(req.params.id) },
+            id_estado_actividad: { type: sql.Int, value: Number(id_estado_actividad) }
+        });
+        res.json({ success: true, ...(result.recordset[0] || {}), message: 'Estado actualizado' });
     } catch (err) {
         console.error('Error PUT /actividades/estado:', err.message);
         res.status(500).json({ error: err.message });
@@ -828,45 +510,112 @@ app.get('/api/prioridades', async (req, res) => {
     }
 });
 
-// GET - Oportunidad por ID (detalle)
+// GET - Oportunidad por ID usando SP
 app.get('/api/oportunidades/:id', async (req, res) => {
     try {
-        const id = req.params.id;
-        
-        const result = await sql.query(`
-            SELECT 
-                O.id_oportunidad,
-                O.numero_oportunidad,
-                O.nombre_oportunidad,
-                C.nombre_comercial AS cliente,
-                C.id_cliente,
-                E.nombre_completo AS vendedor,
-                E.id_empleado,
-                O.monto_potencial,
-                O.porcentaje_avance,
-                O.fecha_inicio,
-                O.fecha_cierre_prevista,
-                TE.nombre_etapa AS etapa_actual
-            FROM Oportunidad O
-            INNER JOIN Cliente C ON O.id_cliente = C.id_cliente
-            INNER JOIN Empleado E ON O.id_empleado_vendedor = E.id_empleado
-            LEFT JOIN (
-                SELECT id_oportunidad, MAX(id_tipo_etapa) as id_tipo_etapa
-                FROM Etapa_Oportunidad
-                GROUP BY id_oportunidad
-            ) UltimaEtapa ON O.id_oportunidad = UltimaEtapa.id_oportunidad
-            LEFT JOIN TipoEtapa TE ON UltimaEtapa.id_tipo_etapa = TE.id_tipo_etapa
-            WHERE O.id_oportunidad = ${id}
-        `);
-        
-        if (result.recordset.length === 0) {
-            return res.status(404).json({ error: 'Oportunidad no encontrada' });
-        }
-        
-        res.json(result.recordset[0]);
-        
+        const result = await ejecutarSP('sp_ObtenerOportunidadPorId', {
+            id_oportunidad: { type: sql.Int, value: Number(req.params.id) }
+        });
+
+        const oportunidad = result.recordsets?.[0]?.[0] || result.recordset?.[0];
+        if (!oportunidad) return res.status(404).json({ error: 'Oportunidad no encontrada' });
+        res.json(oportunidad);
     } catch (err) {
         console.error('Error GET /oportunidades/:id:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+
+// ========== API: REPORTES Y CIERRE (tomado de crmVentasMar) ==========
+
+// Reporte de oportunidades por gestor/vendedor
+app.get('/api/reportes/gestor', async (req, res) => {
+    try {
+        const result = await sql.query(`
+            SELECT *
+            FROM vw_OportunidadesPorGestor
+        `);
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Error GET /reportes/gestor:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Reporte de oportunidades por mes
+app.get('/api/reportes/mes', async (req, res) => {
+    try {
+        const result = await sql.query(`
+            SELECT *
+            FROM vw_OportunidadesPorMes
+        `);
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Error GET /reportes/mes:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Reporte de oportunidades ganadas/perdidas
+app.get('/api/reportes/resultados', async (req, res) => {
+    try {
+        const result = await sql.query(`
+            SELECT *
+            FROM vw_OportunidadesGanadasPerdidas
+        `);
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Error GET /reportes/resultados:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Dashboard desde Data Warehouse
+app.get('/api/dw/dashboard', async (req, res) => {
+    try {
+        const result = await sql.query(`
+            SELECT
+                DE.nombre_completo AS Vendedor,
+                FO.resultado_oportunidad AS Resultado,
+                COUNT(*) AS Total,
+                SUM(FO.monto_potencial) AS MontoPotencial,
+                SUM(FO.monto_ponderado) AS MontoPonderado
+            FROM CRMVentas_DW.dbo.FactOportunidades FO
+            INNER JOIN CRMVentas_DW.dbo.DimEmpleado DE
+                ON FO.id_empleado_dw = DE.id_empleado_dw
+            GROUP BY
+                DE.nombre_completo,
+                FO.resultado_oportunidad
+        `);
+
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Error GET /dw/dashboard:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Cerrar oportunidad usando SP complementario de crmVentasMar
+app.post('/api/oportunidades/:id/cerrar', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { id_resultado, comentario } = req.body;
+
+        const result = await ejecutarSP('sp_CerrarOportunidad', {
+            id_oportunidad: { type: sql.Int, value: Number(id) },
+            id_resultado: { type: sql.Int, value: Number(id_resultado) },
+            comentario: { type: sql.NVarChar(300), value: comentario || 'Cierre desde frontend' }
+        });
+
+        res.json({
+            success: true,
+            message: result.recordset?.[0]?.mensaje || 'Oportunidad cerrada correctamente',
+            data: result.recordset?.[0] || null
+        });
+    } catch (err) {
+        console.error('Error POST /oportunidades/:id/cerrar:', err.message);
         res.status(500).json({ error: err.message });
     }
 });

@@ -94,6 +94,7 @@
                 <li class="nav-item"><a class="nav-link" href="#" data-vista="nuevaOportunidad"><i class="bi bi-plus-circle"></i> Nueva Oportunidad</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-vista="nuevoCliente"><i class="bi bi-person-plus"></i> Nuevo Cliente</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-vista="empleados"><i class="bi bi-people-fill"></i> Vendedores</a></li>
+                <li class="nav-item"><a class="nav-link" href="#" data-vista="reportes"><i class="bi bi-bar-chart"></i> Reportes</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-vista="kanban"><i class="bi bi-kanban"></i> Kanban</a></li>
             </ul>
         </div>
@@ -725,6 +726,10 @@
                 await cargarCatalogosActividad();
                 await cargarActividades();
                 break;
+            case 'reportes':
+                contenedor.innerHTML = renderReportes();
+                await cargarReportes();
+                break;
             default: contenedor.innerHTML = renderDashboard();
         }
     }
@@ -781,51 +786,47 @@
 
     async function cargarKanban() {
     try {
-        // Cargar etapas y oportunidades
         const [etapasRes, oportunidadesRes] = await Promise.all([
             fetch(`${API_URL}/etapas`),
             fetch(`${API_URL}/oportunidades/kanban`)
         ]);
-        
-        etapas = await etapasRes.json();
+
+        const etapasData = await etapasRes.json();
         const oportunidadesData = await oportunidadesRes.json();
-        
-        console.log('Etapas:', etapas);
-        console.log('Oportunidades RAW:', oportunidadesData);
-        
-        if (Array.isArray(oportunidadesData)) {
-            oportunidadesKanban = oportunidadesData;
-        } else {
-            console.error('oportunidadesKanban NO es un array, es:', typeof oportunidadesData);
-            console.log('Contenido:', oportunidadesData);
-            // Si es un objeto de error, mostrarlo
-            if (oportunidadesData.error) {
-                console.error('Error del servidor:', oportunidadesData.error);
-            }
-            oportunidadesKanban = [];  // Convertir a array vacío para evitar el error
-        }
-        
-        console.log('Oportunidades Kanban (después validación):', oportunidadesKanban.length);
-        
+
+        etapas = Array.isArray(etapasData)
+            ? etapasData
+            : etapasData.data || etapasData.etapas || etapasData.recordset || [];
+
+        oportunidadesKanban = Array.isArray(oportunidadesData)
+            ? oportunidadesData
+            : oportunidadesData.data || oportunidadesData.oportunidades || oportunidadesData.recordset || [];
+
+        console.log('Etapas normalizadas:', etapas);
+        console.log('Oportunidades normalizadas:', oportunidadesKanban);
+
         const container = document.getElementById('kanbanContainer');
         if (!container) return;
-        
-        if (etapas.length === 0) {
+
+        if (!Array.isArray(etapas) || etapas.length === 0) {
             container.innerHTML = '<div class="alert alert-warning">No hay etapas configuradas</div>';
             return;
         }
-        
-        // Construir columnas Kanban
+
         let html = '';
-        
+
         for (const etapa of etapas) {
-            const oportunidadesEtapa = oportunidadesKanban.filter(opp => 
-                opp.id_etapa_actual === etapa.id_tipo_etapa || 
+            const oportunidadesEtapa = oportunidadesKanban.filter(opp =>
+                opp.id_etapa_actual === etapa.id_tipo_etapa ||
+                opp.id_tipo_etapa === etapa.id_tipo_etapa ||
                 (opp.id_etapa_actual === null && etapa.orden === 1)
             );
-            
-            const totalMonto = oportunidadesEtapa.reduce((sum, opp) => sum + (parseFloat(opp.monto_potencial) || 0), 0);
-            
+
+            const totalMonto = oportunidadesEtapa.reduce(
+                (sum, opp) => sum + (parseFloat(opp.monto_potencial) || 0),
+                0
+            );
+
             html += `
                 <div class="col-md-3 mb-3" style="min-width: 320px;">
                     <div class="kanban-column" style="background: #f8f9fa; border-radius: 12px; padding: 12px; height: 100%;">
@@ -836,97 +837,145 @@
                             </h6>
                             <span class="badge bg-primary rounded-pill">${oportunidadesEtapa.length}</span>
                         </div>
+
                         <div class="small text-muted mb-2">
-                            $${totalMonto.toLocaleString()}
+                            Q ${totalMonto.toLocaleString()}
                         </div>
+
                         <div class="kanban-cards" data-etapa-id="${etapa.id_tipo_etapa}">
                             ${oportunidadesEtapa.map(opp => `
                                 <div class="kanban-card" data-id="${opp.id_oportunidad}">
                                     <div class="d-flex justify-content-between align-items-start">
-                                        <strong>${opp.cliente || 'Sin cliente'}</strong>
+                                        <strong>
+                                            ${opp.nombre_oportunidad || opp.oportunidad || opp.numero_oportunidad || 'Sin oportunidad'}
+                                        </strong>
+
                                         <div class="dropdown">
                                             <button class="btn btn-sm btn-light btn-action" data-bs-toggle="dropdown">
                                                 <i class="bi bi-three-dots-vertical"></i>
                                             </button>
+
                                             <ul class="dropdown-menu">
                                                 ${etapas.map(e => `
                                                     <li>
-                                                        <a class="dropdown-item ${e.id_tipo_etapa === etapa.id_tipo_etapa ? 'disabled' : ''}" 
-                                                        href="#" onclick="cambiarEtapa(${opp.id_oportunidad}, ${e.id_tipo_etapa}, '${e.nombre_etapa}')">
+                                                        <a class="dropdown-item ${e.id_tipo_etapa === etapa.id_tipo_etapa ? 'disabled' : ''}"
+                                                           href="#"
+                                                           onclick="cambiarEtapa(${opp.id_oportunidad}, ${e.id_tipo_etapa}, '${e.nombre_etapa.replace(/'/g, "\\'")}')">
                                                             ${e.nombre_etapa} (${e.porcentaje}%)
                                                         </a>
                                                     </li>
                                                 `).join('')}
+
+                                                <li><hr class="dropdown-divider"></li>
+
+                                                <li>
+                                                    <a class="dropdown-item text-success" href="#"
+                                                       onclick="cerrarOportunidad(${opp.id_oportunidad}, 2)">
+                                                        <i class="bi bi-check-circle"></i> Marcar como ganada
+                                                    </a>
+                                                </li>
+
+                                                <li>
+                                                    <a class="dropdown-item text-danger" href="#"
+                                                       onclick="cerrarOportunidad(${opp.id_oportunidad}, 3)">
+                                                        <i class="bi bi-x-circle"></i> Marcar como perdida
+                                                    </a>
+                                                </li>
                                             </ul>
                                         </div>
                                     </div>
-                                    <div class="small text-muted">${opp.vendedor || 'Sin vendedor'}</div>
-                                    <div class="fw-bold mt-1">$${(parseFloat(opp.monto_potencial) || 0).toLocaleString()}</div>
-                                    <div class="progress-custom mt-2" style="background: #e9ecef; border-radius: 4px; height: 8px;">
-                                        <div style="width: ${opp.porcentaje_avance || 0}%; background: linear-gradient(90deg, #667eea, #764ba2); border-radius: 4px; height: 8px; transition: width 0.3s;"></div>
+
+                                    <div class="small text-muted">
+                                        Cliente: ${opp.cliente || opp.nombre_cliente || 'Sin cliente'}
                                     </div>
-                                    <div class="small text-muted mt-1">${opp.numero_oportunidad || 'OP-' + opp.id_oportunidad}</div>
+
+                                    <div class="small text-muted">
+                                        Vendedor: ${opp.vendedor || opp.nombre_vendedor || 'Sin vendedor'}
+                                    </div>
+
+                                    <div class="fw-bold mt-1">
+                                        Q ${(parseFloat(opp.monto_potencial) || 0).toLocaleString()}
+                                    </div>
+
+                                    <div class="progress-custom mt-2" style="background: #e9ecef; border-radius: 4px; height: 8px;">
+                                        <div style="width: ${opp.porcentaje_avance || opp.porcentaje || 0}%; background: linear-gradient(90deg, #667eea, #764ba2); border-radius: 4px; height: 8px; transition: width 0.3s;"></div>
+                                    </div>
+
+                                    <div class="small text-muted mt-1">
+                                        ${opp.numero_oportunidad || 'OP-' + opp.id_oportunidad}
+                                    </div>
                                 </div>
                             `).join('')}
-                            ${oportunidadesEtapa.length === 0 ? '<div class="text-center text-muted small p-3">Sin oportunidades</div>' : ''}
+
+                            ${oportunidadesEtapa.length === 0
+                                ? '<div class="text-center text-muted small p-3">Sin oportunidades</div>'
+                                : ''}
                         </div>
-                        <button class="btn btn-sm btn-outline-primary w-100 mt-2" onclick="crearOportunidadDesdeKanban(${etapa.id_tipo_etapa})">
+
+                        <button class="btn btn-sm btn-outline-primary w-100 mt-2"
+                                onclick="crearOportunidadDesdeKanban(${etapa.id_tipo_etapa})">
                             <i class="bi bi-plus"></i> Nueva oportunidad
                         </button>
                     </div>
                 </div>
             `;
         }
-        
+
         container.innerHTML = html;
-        
+
     } catch (error) {
         console.error('Error cargando Kanban:', error);
+
         const container = document.getElementById('kanbanContainer');
         if (container) {
             container.innerHTML = `<div class="alert alert-danger">Error al cargar: ${error.message}</div>`;
         }
     }
 }
-    async function cambiarEtapa(idOportunidad, nuevaEtapaId, etapaNombre) {
-        if (!confirm(`¿Mover esta oportunidad a "${etapaNombre}"?`)) return;
-        
-        // Mostrar mensaje de carga
-        mostrarMensaje(`Moviendo oportunidad a "${etapaNombre}"...`, 'info');
-        
-        try {
-            const response = await fetch(`${API_URL}/oportunidades/${idOportunidad}/cambiar-etapa`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    id_tipo_etapa: nuevaEtapaId,
-                    comentario: `Movido a etapa: ${etapaNombre}`
-                })
-            });
-            
-            const result = await response.json();
-            
-            if (response.ok) {
-                mostrarMensaje(`${result.message}`);
-                
-                // Recargar
-                await cargarDatos();           // Recarga oportunidades generales
-                await cargarKanban();          // Recarga el Kanban fresco
-                
-            } else {
-                mostrarMensaje(`Error: ${result.error}`, 'danger');
-            }
-            
-        } catch (error) {
-            console.error('Error al cambiar etapa:', error);
-            mostrarMensaje('Error de conexión', 'danger');
+    
+async function cambiarEtapa(idOportunidad, idTipoEtapa, nombreEtapa) {
+    if (!confirm(`¿Mover oportunidad a etapa "${nombreEtapa}"?`)) return;
+
+    try {
+        const res = await fetch(`${API_URL}/oportunidades/${idOportunidad}/cambiar-etapa`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                id_tipo_etapa: idTipoEtapa,
+                comentario: `Cambio de etapa a ${nombreEtapa} desde Kanban`
+            })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            alert(data.error || 'Error al cambiar etapa');
+            return;
         }
+
+        alert(data.message || `Oportunidad movida a "${nombreEtapa}"`);
+        await cargarKanban();
+
+    } catch (error) {
+        console.error('Error cambiando etapa:', error);
+        alert('Error cambiando etapa: ' + error.message);
     }
-    function crearOportunidadDesdeKanban(etapaId) {
-        // Redirigir al formulario con etapa pre-seleccionada
-        localStorage.setItem('etapaInicial', etapaId);
-        cambiarVista('nuevaOportunidad');
-    }
+}
+
+function crearOportunidadDesdeKanban(etapaId) {
+    localStorage.setItem('etapaInicial', etapaId);
+    cambiarVista('nuevaOportunidad');
+
+    setTimeout(() => {
+        const etapaSelect = document.getElementById('id_tipo_etapa');
+
+        if (etapaSelect) {
+            etapaSelect.value = etapaId;
+        }
+    }, 300);
+}
     // ========== VARIABLES GLOBALES PARA ACTIVIDADES ==========
 let actividades = [];
 let tiposActividad = [];
@@ -1418,6 +1467,179 @@ let prioridades = [];
         }
     }
     
+    async function cerrarOportunidad(idOportunidad, idResultado) {
+        const texto = idResultado === 2 ? 'ganada' : 'perdida';
+
+        if (!confirm(`¿Seguro que deseas marcar esta oportunidad como ${texto}?`)) {
+            return;
+        }
+
+        const comentario = prompt(`Comentario para cierre como ${texto}:`) || `Cierre como ${texto}`;
+
+        try {
+            const response = await fetch(`${API_URL}/oportunidades/${idOportunidad}/cerrar`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id_resultado: idResultado,
+                    comentario: comentario
+                })
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                mostrarMensaje(result.message || `Oportunidad marcada como ${texto}`);
+
+                await cargarDatos();
+                await cargarKanban();
+            } else {
+                mostrarMensaje('Error: ' + result.error, 'danger');
+            }
+
+        } catch (error) {
+            console.error('Error cerrando oportunidad:', error);
+            mostrarMensaje('Error de conexión al cerrar oportunidad', 'danger');
+        }
+    }
+    function renderReportes() {
+        return `
+            <div class="card-modern card p-4 mb-4">
+                <h4><i class="bi bi-bar-chart"></i> Reportes Ejecutivos</h4>
+                <p class="text-muted">Resumen comercial generado desde vistas SQL.</p>
+            </div>
+
+            <div class="card-modern card p-4 mb-4">
+                <h5>Oportunidades por Gestor</h5>
+                <div id="reporteGestor">Cargando...</div>
+            </div>
+
+            <div class="card-modern card p-4 mb-4">
+                <h5>Oportunidades por Mes</h5>
+                <div id="reporteMes">Cargando...</div>
+            </div>
+
+            <div class="card-modern card p-4">
+                <h5>Ganadas / Perdidas</h5>
+                <div id="reporteResultados">Cargando...</div>
+            </div>
+
+            <div class="card-modern card p-4 mt-4">
+                <h5>
+                    <i class="bi bi-database"></i>
+                    Dashboard Data Warehouse
+                </h5>
+
+                <div id="reporteDW">
+                    Cargando...
+                </div>
+            </div>
+        `;
+    }
+
+    async function cargarReportes() {
+        try {
+            const [
+                gestorRes,
+                mesRes,
+                resultadosRes,
+                dwRes
+            ] = await Promise.all([
+                fetch(`${API_URL}/reportes/gestor`),
+                fetch(`${API_URL}/reportes/mes`),
+                fetch(`${API_URL}/reportes/resultados`),
+                fetch(`${API_URL}/dw/dashboard`)
+            ]);
+
+            const gestor = await gestorRes.json();
+            const mes = await mesRes.json();
+            const resultados = await resultadosRes.json();
+            const dw = await dwRes.json();
+
+            document.getElementById('reporteGestor').innerHTML = tablaReporte(
+                gestor,
+                ['Gestor', 'TotalOportunidades', 'MontoPotencial', 'MontoPonderado']
+            );
+
+            document.getElementById('reporteMes').innerHTML = tablaReporte(
+                mes,
+                ['Anio', 'Mes', 'TotalOportunidades', 'MontoPotencial', 'MontoPonderado']
+            );
+
+            document.getElementById('reporteResultados').innerHTML = tablaReporte(
+                resultados,
+                ['Resultado', 'TotalOportunidades', 'MontoPotencial', 'MontoPonderado']
+            );
+
+            document.getElementById('reporteDW').innerHTML =
+                tablaReporte(
+                    dw,
+                    [
+                        'Vendedor',
+                        'Resultado',
+                        'TotalOportunidades',
+                        'MontoPotencial',
+                        'MontoPonderado'
+                    ]
+                );
+
+        } catch (error) {
+            console.error('Error cargando reportes:', error);
+            mostrarMensaje('Error cargando reportes', 'danger');
+        }
+    }
+
+    function tablaReporte(datos, columnas) {
+        if (!Array.isArray(datos) || datos.length === 0) {
+            return `<div class="alert alert-warning">No hay datos para mostrar</div>`;
+        }
+
+        return `
+            <div class="table-responsive">
+                <table class="table table-hover table-bordered">
+                    <thead class="table-light">
+                        <tr>
+                            ${columnas.map(c => `<th>${formatearTitulo(c)}</th>`).join('')}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${datos.map(fila => `
+                            <tr>
+                                ${columnas.map(c => `<td>${formatearValor(c, fila[c])}</td>`).join('')}
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function formatearTitulo(columna) {
+        const titulos = {
+            Gestor: 'Gestor',
+            Resultado: 'Resultado',
+            Anio: 'Año',
+            Mes: 'Mes',
+            TotalOportunidades: 'Total',
+            MontoPotencial: 'Monto Potencial',
+            MontoPonderado: 'Monto Ponderado'
+        };
+
+        return titulos[columna] || columna;
+    }
+
+    function formatearValor(columna, valor) {
+        if (valor === null || valor === undefined) return '-';
+
+        if (columna.includes('Monto')) {
+            return 'Q' + Number(valor).toLocaleString('es-GT', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+        }
+
+        return valor;
+    }
     async function init() {
         const conectado = await verificarConexion();
         if (conectado) {
