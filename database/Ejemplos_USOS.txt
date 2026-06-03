@@ -1,0 +1,95 @@
+-- ============================================================
+-- EJEMPLOS DE USO
+-- ============================================================
+
+/*
+-- ---- CLIENTES ----
+EXEC sp_CrearCliente
+    'Tecnologias XYZ', 'Tecnologias XYZ S.A.',
+    'Zona 10, Guatemala', '2222-3333', '5555-6666',
+    'contacto@xyz.com', 'Juan Perez', 1;
+
+EXEC sp_ObtenerClientes;                        -- activos
+EXEC sp_ObtenerClientes @activo = 0;            -- inactivos
+EXEC sp_ObtenerClientePorId @id_cliente = 1;
+
+EXEC sp_ActualizarCliente
+    1, 'Tecnologias XYZ Renovado', NULL,
+    'Zona 10, Guatemala', '2222-9999', NULL,
+    'nuevo@xyz.com', 'Maria Lopez', 2;
+
+EXEC sp_EliminarCliente @id_cliente = 1;
+
+-- ---- EMPLEADOS ----
+EXEC sp_CrearEmpleado
+    'Sandra Aroche', 'saroche@innovacion.com', '5555-1111', 3, NULL;
+
+EXEC sp_ObtenerEmpleados;
+EXEC sp_ObtenerEmpleadoPorId @id_empleado = 1;
+EXEC sp_ActualizarEmpleado 1, 'Sandra Aroche Lopez', 'saroche@innovacion.com', '5555-1111', 3, 1;
+EXEC sp_EliminarEmpleado @id_empleado = 1;
+
+-- ---- OPORTUNIDADES ----
+EXEC sp_CrearOportunidad
+    'Venta Software ERP', 1, 1, 2, 1, 2, 1, 60000.00;
+
+EXEC sp_ObtenerOportunidades;
+EXEC sp_ObtenerOportunidadPorId @id_oportunidad = 1;
+
+EXEC sp_AgregarEtapaOportunidad
+    1, 3, 1, 60000.00, NULL, NULL,
+    'El cliente solicito mas informacion del producto';
+
+EXEC sp_AgregarEtapaOportunidad
+    1, 5, 1, 60000.00, 1, 'OFV-0001',
+    'Se presento cotizacion formal';
+
+EXEC sp_AgregarEtapaOportunidad
+    1, 7, 1, 60000.00, 2, 'PED-0047',
+    'Cliente acepto propuesta final';
+
+-- Cerrar como ganada (requiere 100% de avance)
+EXEC sp_CerrarOportunidad 1, 'GANADA', 'Contrato firmado por monto total acordado';
+
+-- Cerrar como perdida
+EXEC sp_CerrarOportunidad 2, 'PERDIDA', 'Cliente selecciono a la competencia por precio';
+
+-- ---- ACTIVIDADES ----
+-- Sin vincular a oportunidad
+EXEC sp_CrearActividad
+    1, 1, 2,                -- cliente, empleado, tipo (REUNION)
+    'Reunion de seguimiento de propuesta',
+    '2025-06-15', '09:00', '10:00',
+    2, 'Revisar avance del proyecto', 1,
+    NULL,                   -- id_oportunidad (opcional)
+    '5ta Avenida', 'Guatemala', 'Sala A';
+
+-- Vinculada a una oportunidad especifica
+EXEC sp_CrearActividad
+    1, 1, 3,                -- cliente, empleado, tipo (TAREA)
+    'Preparar propuesta economica',
+    '2025-06-16', '14:00', NULL,
+    1, 'Preparar cotizacion para presentar el lunes', 4,
+    1,                      -- id_oportunidad = 1
+    NULL, NULL, NULL;
+
+EXEC sp_ObtenerActividades;
+EXEC sp_ObtenerActividades @id_cliente = 1;
+EXEC sp_ObtenerActividades @id_empleado = 1, @id_estado = 1;
+EXEC sp_ObtenerActividades @id_oportunidad = 1;  -- actividades de una oportunidad
+
+EXEC sp_ActualizarEstadoActividad @id_actividad = 1, @id_estado_actividad = 3; -- CONCLUIDO
+
+EXEC sp_EliminarActividad @id_actividad = 1;
+
+========================================================
+-- ---- REPORTES ----
+========================================================
+EXEC sp_ReporteOportunidadesPorFecha '2025-01-01', '2025-12-31';
+
+EXEC sp_ReporteOportunidadesPorGestor NULL, '2025-01-01', '2025-12-31';
+EXEC sp_ReporteOportunidadesPorGestor @id_empleado = 1;
+
+EXEC sp_ReporteOportunidadesGanadasPerdidas '2025-01-01', '2025-12-31', NULL;
+EXEC sp_ReporteOportunidadesGanadasPerdidas @resultado = 'GANADA';
+*/
