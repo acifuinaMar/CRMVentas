@@ -10,7 +10,7 @@ app.use(express.static('public'));
 // ========== CONFIGURACIÓN ==========
 const config = {
     user: 'sa',
-    password: 'CrmVentas2024!',
+    password: '123456789',
     server: 'localhost\\SQLEXPRESS',
     database: 'CRMVentas',
     options: {
